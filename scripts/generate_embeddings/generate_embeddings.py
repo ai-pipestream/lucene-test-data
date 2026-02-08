@@ -6,7 +6,9 @@ Uses DJL Serving (GPU) with configurable batch size.
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
+import time
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -16,8 +18,8 @@ if _SCRIPT_DIR not in sys.path:
     sys.path.insert(0, str(_SCRIPT_DIR))
 
 from chunking import chunk_text
-from djl_client import embed_in_batches
-from vec_io import write_vec_file, write_vec_shards, write_manifest
+from djl_client import embed_batch
+from vec_io import write_vec_file, StreamingVecWriter, write_manifest
 
 # Config: prefer YAML
 try:
@@ -161,15 +163,7 @@ def main() -> int:
     dim = int(djl.get("dim", 1024))
     batch_size = int(djl.get("batch_size", 1000))
     timeout_sec = int(djl.get("timeout_sec", 120))
-
-    print(f"Embedding via DJL ({url}, model={model_name}, dim={dim}, batch_size={batch_size})...")
-    embeddings = embed_in_batches(
-        url, model_name, chunks, dim,
-        batch_size=batch_size,
-        timeout_sec=timeout_sec,
-        progress_interval=5,
-    )
-    print(f"  Got {len(embeddings)} vectors")
+    num_shards = args.num_shards
 
     out_cfg = cfg.get("output", {})
     base_output_dir = Path(out_cfg.get("output_dir", "data/embeddings"))
@@ -177,7 +171,6 @@ def main() -> int:
     output_name = out_cfg.get("name")  # e.g. unit-data, wiki-1024-sentences
 
     if output_name:
-        # All files go in a named subdir with fixed filenames
         output_dir = base_output_dir / output_name.strip()
         output_dir.mkdir(parents=True, exist_ok=True)
         docs_vec_path = output_dir / "docs.vec"
@@ -196,25 +189,68 @@ def main() -> int:
         queries_vec_path = output_dir / f"{stem}-queries.vec"
         meta_path = output_dir / f"{stem}-meta.json"
 
-    # Hold out first num_queries as queries (same as luceneutil convention)
-    nq = min(num_queries, len(embeddings))
-    query_vectors = embeddings[:nq]
-    doc_vectors = embeddings  # full set as docs
+    # Set up logging to file + stdout
+    log_path = output_dir / "embedding.log"
+    log = logging.getLogger("embeddings")
+    log.setLevel(logging.INFO)
+    log.handlers.clear()
+    fmt = logging.Formatter("%(asctime)s  %(message)s", datefmt="%H:%M:%S")
+    fh = logging.FileHandler(log_path, mode="w")
+    fh.setFormatter(fmt)
+    sh = logging.StreamHandler(sys.stdout)
+    sh.setFormatter(fmt)
+    log.addHandler(fh)
+    log.addHandler(sh)
 
-    num_shards = args.num_shards
+    log.info(f"Embedding {len(chunks)} chunks via DJL ({url}, model={model_name}, dim={dim}, batch={batch_size})")
+    log.info(f"Streaming to disk: {output_dir}  (shards={num_shards})")
 
-    if num_shards > 1:
-        print(f"Writing {num_shards} shard files...")
-        shard_paths, shard_sizes, shard_offsets = write_vec_shards(
-            output_dir, doc_vectors, dim, num_shards
-        )
-        for sp in shard_paths:
-            print(f"  Wrote {sp}")
-    else:
-        write_vec_file(docs_vec_path, doc_vectors, dim)
-        print(f"Wrote {docs_vec_path}")
+    # ── Streaming embed + write ──────────────────────────────────────
+    writer = StreamingVecWriter(output_dir, dim, num_shards)
+    query_vectors: list[list[float]] = []
+    total_chunks = len(chunks)
+    total_batches = (total_chunks + batch_size - 1) // batch_size
+    vectors_written = 0
+    t_start = time.perf_counter()
 
+    for batch_idx in range(total_batches):
+        i = batch_idx * batch_size
+        batch_texts = chunks[i : i + batch_size]
+        batch_vecs = embed_batch(url, model_name, batch_texts, dim, timeout_sec=timeout_sec)
+
+        # Collect query vectors from the first chunks (before streaming to disk)
+        if len(query_vectors) < num_queries:
+            need = num_queries - len(query_vectors)
+            query_vectors.extend(batch_vecs[:need])
+
+        writer.append_batch(batch_vecs)
+        vectors_written += len(batch_vecs)
+
+        # Progress every 5 batches or on the last batch
+        if (batch_idx + 1) % 5 == 0 or batch_idx == total_batches - 1:
+            elapsed = time.perf_counter() - t_start
+            vps = vectors_written / elapsed if elapsed > 0 else 0
+            remaining = (total_chunks - vectors_written) / vps if vps > 0 else 0
+            pct = 100 * vectors_written / total_chunks
+            log.info(
+                f"  {vectors_written:,}/{total_chunks:,} ({pct:.1f}%) "
+                f"batch {batch_idx+1}/{total_batches}  "
+                f"{vps:.0f} vec/s  ETA {remaining:.0f}s"
+            )
+
+    elapsed_total = time.perf_counter() - t_start
+    log.info(f"Embedding complete: {vectors_written:,} vectors in {elapsed_total:.1f}s")
+
+    # Finalize: split temp file into shards
+    log.info("Splitting into shard files...")
+    shard_paths, shard_sizes, shard_offsets = writer.finalize()
+    for sp in shard_paths:
+        log.info(f"  Wrote {sp.name}")
+
+    # Write query vectors
+    nq = len(query_vectors)
     write_vec_file(queries_vec_path, query_vectors, dim)
+    log.info(f"Wrote {queries_vec_path} ({nq} queries)")
 
     source_path = ""
     if source == "wikipedia":
@@ -228,7 +264,7 @@ def main() -> int:
         "granularity": cfg.get("granularity", "sentence"),
         "model_name": model_name,
         "dim": dim,
-        "num_docs": len(doc_vectors),
+        "num_docs": vectors_written,
         "num_query_vectors": nq,
         "output_docs_vec": str(docs_vec_path) if num_shards <= 1 else "docs-shard-{i}.vec",
         "output_queries_vec": str(queries_vec_path),
@@ -242,8 +278,8 @@ def main() -> int:
         manifest["dataset_name"] = output_name.strip()
     write_manifest(meta_path, manifest)
 
-    print(f"Wrote {queries_vec_path}")
-    print(f"Wrote {meta_path}")
+    log.info(f"Wrote {meta_path}")
+    log.info(f"Done. Total time: {elapsed_total:.1f}s")
     return 0
 
 
