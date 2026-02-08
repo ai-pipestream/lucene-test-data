@@ -4,7 +4,8 @@ services:
     ports:
       - "8091:8080"
     volumes:
-      - ../bge-m3-model:/opt/ml/model:ro
+      - /work/opensearch-grpc-knn:/work:ro
+      - ../bge-m3-model:/opt/ml/model/bge-m3:ro
     environment:
       - MODEL_LOADING_TIMEOUT=300
     deploy:

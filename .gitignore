@@ -1,0 +1,25 @@
+# Large data (download or copy separately; see docs/DATA_SIMPLEWIKI.md)
+data/
+simplewiki.json
+
+# Generated embeddings
+*.vec
+
+# HuggingFace / model weight caches
+.cache/
+*.bin
+*.pt
+*.safetensors
+*.onnx
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store

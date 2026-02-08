@@ -1,0 +1,51 @@
+# Example config for generate_embeddings.py
+# Use one source type: either wikipedia OR text_dir (not both).
+
+source: wikipedia   # or: text_dir
+
+# --- Wikipedia kit (when source: wikipedia) ---
+# Path relative to repo root when running from lucene-test-data. Run fetch_simplewiki.py if missing.
+wikipedia:
+  path: data/simplewiki.json   # JSONL: one JSON per line with "text" key
+  path_encoding: utf-8
+  max_docs: 100000        # cap for testing; omit or set null for full
+
+# --- Directory of text files (when source: text_dir) ---
+# text_dir:
+#   path: /path/to/plain/text/files
+#   glob: "**/*.txt"
+#   encoding: utf-8
+#   max_docs: 50000
+
+# --- Chunking: sentence vs paragraph (one run = one granularity) ---
+granularity: sentence   # or: paragraph
+
+# Optional chunking tweaks
+# paragraph_delimiter: "\n\n"
+# max_tokens_per_chunk: 512
+# line_per_unit: false   # if true, treat each line as one unit (simple "sentence")
+
+# --- DJL Serving ---
+# Match the old script: POST to http://localhost:8091/predictions/<model_name> with JSON array of strings.
+# BGE-M3 (1024d) auto-loads via bge-m3-model/serving.properties + model.py.
+# DJL names it "bge_m3" (underscores) from the mounted directory "bge-m3".
+# For MiniLM (384d), run load-models.sh and set model_name: all-MiniLM-L6-v2, dim: 384.
+djl:
+  url: http://localhost:8091
+  model_name: bge_m3
+  dim: 1024
+  batch_size: 100
+  timeout_sec: 240
+
+# --- Output ---
+output:
+  output_dir: data/embeddings
+  output_stem: null     # optional; default = {source_id}-{granularity}-{model}-{dim}d
+  num_query_vectors: 5000
+
+# --- Optional: run all 4 sets in one go (override with CLI for single run) ---
+# four_sets:
+#   - { model_name: all-MiniLM-L6-v2, dim: 384, granularity: sentence }
+#   - { model_name: all-MiniLM-L6-v2, dim: 384, granularity: paragraph }
+#   - { model_name: bge_m3, dim: 1024, granularity: sentence }
+#   - { model_name: bge_m3, dim: 1024, granularity: paragraph }

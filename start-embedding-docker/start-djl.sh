@@ -3,12 +3,12 @@
 # Detect GPU availability
 if command -v nvidia-smi &>/dev/null && nvidia-smi -L &>/dev/null; then
     echo "GPU detected using nvidia-smi."
-    export DJL_IMAGE="deepjavalibrary/djl-serving:0.31.0-pytorch-gpu"
+    export DJL_IMAGE="deepjavalibrary/djl-serving:0.36.0-pytorch-gpu"
     export DOCKER_DRIVER="nvidia"
     export GPU_COUNT="all"
 else
     echo "No GPU detected or nvidia-smi failed. Falling back to CPU."
-    export DJL_IMAGE="deepjavalibrary/djl-serving:0.31.0-pytorch-cpu"
+    export DJL_IMAGE="deepjavalibrary/djl-serving:0.36.0-pytorch-cpu"
     export DOCKER_DRIVER="none"
     export GPU_COUNT="0"
 fi
