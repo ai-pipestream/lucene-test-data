@@ -63,8 +63,9 @@ def handle(inputs: Input) -> Output:
 
     device = next(model.parameters()).device
 
+    max_len = int(inputs.get_properties().get("max_length", 512))
     encoded = tokenizer(
-        sentences, padding=True, truncation=True, max_length=8192, return_tensors="pt"
+        sentences, padding=True, truncation=True, max_length=max_len, return_tensors="pt"
     ).to(device)
 
     with torch.no_grad():
