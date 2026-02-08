@@ -1,0 +1,7 @@
+Lucene: Collaborative HNSW PR (feature/collaborative-hnsw-search)
+Run: 2026-02-08 (luceneutil, same index & exact-NN cache as main)
+
+SUMMARY: 0.996	1.031	1.030	0.999	72969	100	100	64	250	no	5982	8.48	8601.79	14.11	1	291.79	null	N/A	1.000	285.035	285.035	false	HNSW
+
+recall	latency(ms)	netCPU	avgCpuCount	nDoc	topK	fanout	maxConn	beamWidth	quantized	visited	index(s)	index_docs/s	force_merge(s)	num_segments	index_size(MB)	indexType
+0.996	1.031	1.030	0.999	72969	100	100	64	250	no	5982	8.48	8601.79	14.11	1	291.79	HNSW
