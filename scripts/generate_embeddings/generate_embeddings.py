@@ -17,7 +17,7 @@ if _SCRIPT_DIR not in sys.path:
 
 from chunking import chunk_text
 from djl_client import embed_in_batches
-from vec_io import write_vec_file, write_manifest
+from vec_io import write_vec_file, write_vec_shards, write_manifest
 
 # Config: prefer YAML
 try:
@@ -108,6 +108,7 @@ def main() -> int:
     ap.add_argument("--max-docs", type=int, help="Override max_docs (wikipedia or text_dir)")
     ap.add_argument("--model-name", type=str, help="Override djl.model_name (e.g. all-MiniLM-L6-v2 or bge-m3)")
     ap.add_argument("--dim", type=int, help="Override djl.dim (e.g. 384 for MiniLM, 1024 for bge-m3)")
+    ap.add_argument("--num-shards", type=int, default=1, help="Split docs.vec into N shard files (default: 1, no sharding)")
     args = ap.parse_args()
 
     if not args.config.exists():
@@ -200,7 +201,19 @@ def main() -> int:
     query_vectors = embeddings[:nq]
     doc_vectors = embeddings  # full set as docs
 
-    write_vec_file(docs_vec_path, doc_vectors, dim)
+    num_shards = args.num_shards
+
+    if num_shards > 1:
+        print(f"Writing {num_shards} shard files...")
+        shard_paths, shard_sizes, shard_offsets = write_vec_shards(
+            output_dir, doc_vectors, dim, num_shards
+        )
+        for sp in shard_paths:
+            print(f"  Wrote {sp}")
+    else:
+        write_vec_file(docs_vec_path, doc_vectors, dim)
+        print(f"Wrote {docs_vec_path}")
+
     write_vec_file(queries_vec_path, query_vectors, dim)
 
     source_path = ""
@@ -217,15 +230,18 @@ def main() -> int:
         "dim": dim,
         "num_docs": len(doc_vectors),
         "num_query_vectors": nq,
-        "output_docs_vec": str(docs_vec_path),
+        "output_docs_vec": str(docs_vec_path) if num_shards <= 1 else "docs-shard-{i}.vec",
         "output_queries_vec": str(queries_vec_path),
         "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
+    if num_shards > 1:
+        manifest["num_shards"] = num_shards
+        manifest["shard_sizes"] = shard_sizes
+        manifest["shard_doc_offsets"] = shard_offsets
     if output_name:
         manifest["dataset_name"] = output_name.strip()
     write_manifest(meta_path, manifest)
 
-    print(f"Wrote {docs_vec_path}")
     print(f"Wrote {queries_vec_path}")
     print(f"Wrote {meta_path}")
     return 0

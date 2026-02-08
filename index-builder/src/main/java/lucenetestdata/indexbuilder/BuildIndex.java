@@ -23,6 +23,7 @@ public final class BuildIndex {
         Path basePath = null;
         int numShards = 1;
         int batchSize = 1000;
+        int numThreads = 1;
         for (int i = 0; i < args.length; i++) {
             switch (args[i].toLowerCase(Locale.ROOT)) {
                 case "--dataset", "-d" -> {
@@ -47,6 +48,11 @@ public final class BuildIndex {
                     batchSize = Integer.parseInt(args[++i]);
                     if (batchSize < 1) usage("--batch-size must be >= 1");
                 }
+                case "--threads", "-t" -> {
+                    if (i + 1 >= args.length) usage("Missing value for --threads");
+                    numThreads = Integer.parseInt(args[++i]);
+                    if (numThreads < 1) usage("--threads must be >= 1");
+                }
                 case "--help", "-h" -> usage(null);
                 default -> usage("Unknown option: " + args[i]);
             }
@@ -58,8 +64,12 @@ public final class BuildIndex {
             System.out.println("Dataset: " + resolved.getDatasetDir());
             System.out.println("  dim=" + resolved.getManifest().getDim()
                 + " num_docs=" + resolved.getManifest().getNumDocs());
+            if (resolved.isSharded()) {
+                System.out.println("  pre-sharded: " + resolved.getManifest().getNumShards() + " vec shards");
+            }
             if (numShards > 1) {
-                System.out.println("Building " + numShards + " shard indices under: " + outputPath + " (batch=" + batchSize + ")");
+                System.out.println("Building " + numShards + " shard indices under: " + outputPath
+                    + " (batch=" + batchSize + ", threads=" + numThreads + ")");
             } else {
                 System.out.println("Building index at: " + outputPath + " (batch=" + batchSize + ")");
             }
@@ -68,7 +78,7 @@ public final class BuildIndex {
                     System.err.printf("  Shard %d/%d: %d/%d docs%n", shard + 1, total, written, inShard);
                 }
             };
-            IndexBuilder.build(resolved, outputPath, numShards, batchSize, progress);
+            IndexBuilder.build(resolved, outputPath, numShards, batchSize, numThreads, progress);
             System.out.println("Done.");
         } catch (Exception e) {
             System.err.println("Error: " + e.getMessage());
@@ -84,6 +94,7 @@ public final class BuildIndex {
         System.err.println("  --output      Lucene index output directory (or base dir when --num-shards > 1)");
         System.err.println("  --num-shards  Number of shard indices to create (default: 1). Output: <output>/shard-0, shard-1, ...");
         System.err.println("  --batch-size  Documents per addDocuments batch (default: 1000). Larger = faster indexing, more RAM.");
+        System.err.println("  --threads     Concurrent shard build threads (default: 1). Each thread loads+writes one shard at a time.");
         System.err.println("  --base        Base directory containing an 'embeddings' subdir (e.g. data or repo root)");
         System.exit(error == null ? 0 : 1);
     }

@@ -56,9 +56,17 @@ public final class DatasetResolver {
             throw new IllegalArgumentException("Missing meta.json in dataset dir: " + datasetDir);
         }
         EmbeddingManifest manifest = loadManifest(metaPath);
-        Path docsPath = datasetDir.resolve("docs.vec");
-        if (!Files.isRegularFile(docsPath)) {
-            throw new IllegalArgumentException("Missing docs.vec in dataset dir: " + datasetDir);
+        if (manifest.isSharded()) {
+            // Verify at least the first shard file exists
+            Path shard0 = datasetDir.resolve("docs-shard-0.vec");
+            if (!Files.isRegularFile(shard0)) {
+                throw new IllegalArgumentException("Missing docs-shard-0.vec in sharded dataset dir: " + datasetDir);
+            }
+        } else {
+            Path docsPath = datasetDir.resolve("docs.vec");
+            if (!Files.isRegularFile(docsPath)) {
+                throw new IllegalArgumentException("Missing docs.vec in dataset dir: " + datasetDir);
+            }
         }
         return new ResolvedDataset(datasetDir, manifest);
     }
@@ -100,7 +108,16 @@ public final class DatasetResolver {
 
         public Path getDatasetDir() { return datasetDir; }
         public EmbeddingManifest getManifest() { return manifest; }
+        public boolean isSharded() { return manifest.isSharded(); }
+
+        /** Returns docs.vec path (for unsharded datasets). */
         public Path getDocsVecPath() { return datasetDir.resolve("docs.vec"); }
+
+        /** Returns docs-shard-{shardIndex}.vec path. */
+        public Path getShardVecPath(int shardIndex) {
+            return datasetDir.resolve("docs-shard-" + shardIndex + ".vec");
+        }
+
         public Path getQueriesVecPath() { return datasetDir.resolve("queries.vec"); }
     }
 }

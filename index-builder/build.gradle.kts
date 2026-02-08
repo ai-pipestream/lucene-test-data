@@ -31,6 +31,11 @@ application {
     mainClass.set("lucenetestdata.indexbuilder.BuildIndex")
 }
 
+tasks.register<JavaExec>("mergeShards") {
+    mainClass.set("lucenetestdata.indexbuilder.MergeShards")
+    classpath = sourceSets["main"].runtimeClasspath
+}
+
 tasks.test {
     useJUnitPlatform()
 }

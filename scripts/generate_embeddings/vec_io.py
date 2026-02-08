@@ -3,8 +3,9 @@ from __future__ import annotations
 
 import json
 import struct
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Sequence, Tuple
 
 
 def write_vec_file(path: Path, vectors: Sequence[Sequence[float]], dim: int) -> None:
@@ -32,6 +33,49 @@ def read_vec_file(path: Path, dim: int) -> List[List[float]]:
                 break
             out.append(list(struct.unpack(f"<{dim}f", b)))
     return out
+
+
+def _write_shard(args: Tuple[Path, List[List[float]], int]) -> int:
+    """Worker function for ProcessPoolExecutor: write one shard file."""
+    path, vectors, dim = args
+    write_vec_file(path, vectors, dim)
+    return len(vectors)
+
+
+def write_vec_shards(
+    output_dir: Path,
+    vectors: Sequence[Sequence[float]],
+    dim: int,
+    num_shards: int,
+) -> Tuple[List[Path], List[int], List[int]]:
+    """Split vectors into num_shards contiguous slices, write each as docs-shard-{i}.vec.
+
+    Returns (shard_paths, shard_sizes, shard_doc_offsets).
+    """
+    n = len(vectors)
+    per_shard = n // num_shards
+    remainder = n % num_shards
+
+    slices: List[Tuple[int, int]] = []
+    start = 0
+    for s in range(num_shards):
+        count = per_shard + (1 if s < remainder else 0)
+        slices.append((start, start + count))
+        start += count
+
+    shard_paths = [output_dir / f"docs-shard-{i}.vec" for i in range(num_shards)]
+    shard_sizes = [end - begin for begin, end in slices]
+    shard_offsets = [begin for begin, _ in slices]
+
+    # Each worker needs a plain list (picklable); slice the vectors
+    work = [
+        (shard_paths[i], list(vectors[slices[i][0]:slices[i][1]]), dim)
+        for i in range(num_shards)
+    ]
+    with ProcessPoolExecutor() as pool:
+        list(pool.map(_write_shard, work))
+
+    return shard_paths, shard_sizes, shard_offsets
 
 
 def write_manifest(path: Path, data: Dict[str, Any]) -> None:

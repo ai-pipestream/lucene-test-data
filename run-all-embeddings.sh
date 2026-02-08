@@ -17,20 +17,23 @@ OUTPUT_BASE="data/embeddings"
 EXTRA_ARGS=("$@")
 
 # ── The 4 embedding sets ─────────────────────────────────────────────
-#   output-name            model                  dim   granularity  batch_size
+#   output-name            model                  dim   granularity  batch_size  num_shards
 #   BGE-M3 (~568M params) → batch 500 on 16GB VRAM; MiniLM (~22M) → batch 1000
+#   16 vec shards: index-builder can group into 2, 4, 8, or 16 index shards
 SETS=(
-  "wiki-1024-sentences    bge_m3                 1024  sentence     500"
-  "wiki-1024-paragraphs   bge_m3                 1024  paragraph    500"
-  "wiki-384-sentences     all-MiniLM-L6-v2       384   sentence     1000"
-  "wiki-384-paragraphs    all-MiniLM-L6-v2       384   paragraph    1000"
+  "wiki-1024-sentences    bge_m3                 1024  sentence     500   16"
+  "wiki-1024-paragraphs   bge_m3                 1024  paragraph    500   16"
+  "wiki-384-sentences     all-MiniLM-L6-v2       384   sentence     1000  16"
+  "wiki-384-paragraphs    all-MiniLM-L6-v2       384   paragraph    1000  16"
 )
 
 # ── Helper: check if a set is already complete ────────────────────────
 set_is_complete() {
     local name="$1"
     local dir="$OUTPUT_BASE/$name"
-    [ -f "$dir/docs.vec" ] && [ -f "$dir/queries.vec" ] && [ -f "$dir/meta.json" ]
+    # Must have queries and meta; docs can be either monolithic or sharded
+    [ -f "$dir/queries.vec" ] && [ -f "$dir/meta.json" ] && \
+        ( [ -f "$dir/docs.vec" ] || [ -f "$dir/docs-shard-0.vec" ] )
 }
 
 # ── Helper: check if a DJL model is READY ────────────────────────────
@@ -99,11 +102,12 @@ SKIPPED=0
 FAILED=0
 
 for set_line in "${SETS[@]}"; do
-    read -r name model dim granularity default_batch <<< "$set_line"
+    read -r name model dim granularity default_batch num_shards <<< "$set_line"
+    num_shards="${num_shards:-1}"
 
     echo ""
     echo "────────────────────────────────────────────────────"
-    echo "Set: $name (model=$model, dim=$dim, granularity=$granularity, batch=$default_batch)"
+    echo "Set: $name (model=$model, dim=$dim, granularity=$granularity, batch=$default_batch, shards=$num_shards)"
     echo "────────────────────────────────────────────────────"
 
     if set_is_complete "$name"; then
@@ -140,6 +144,7 @@ for set_line in "${SETS[@]}"; do
         --granularity "$granularity" \
         --output-name "$name" \
         --batch-size "$default_batch" \
+        --num-shards "$num_shards" \
         "${EXTRA_ARGS[@]}"; then
         COMPLETED=$((COMPLETED + 1))
     else
@@ -156,11 +161,15 @@ echo "════════════════════════�
 echo ""
 echo "Output:"
 for set_line in "${SETS[@]}"; do
-    read -r name _ _ _ <<< "$set_line"
+    read -r name _ _ _ _ _ <<< "$set_line"
     dir="$OUTPUT_BASE/$name"
     if [ -f "$dir/docs.vec" ]; then
         SIZE=$(du -sh "$dir/docs.vec" | cut -f1)
         echo "  $dir/  ($SIZE)"
+    elif [ -f "$dir/docs-shard-0.vec" ]; then
+        SIZE=$(du -shc "$dir"/docs-shard-*.vec | tail -1 | cut -f1)
+        NSHARDS=$(ls "$dir"/docs-shard-*.vec 2>/dev/null | wc -l)
+        echo "  $dir/  ($SIZE, ${NSHARDS} shards)"
     else
         echo "  $dir/  (missing)"
     fi
