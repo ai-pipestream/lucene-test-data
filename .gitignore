@@ -2,8 +2,12 @@
 data/
 simplewiki.json
 
-# Generated embeddings
+# Generated embeddings (except small test set in index-builder)
 *.vec
+!index-builder/src/main/resources/embeddings/*.vec
+!index-builder/src/main/resources/embeddings/*.json
+!index-builder/src/main/resources/embeddings/**/*.vec
+!index-builder/src/main/resources/embeddings/**/*.json
 
 # HuggingFace / model weight caches
 .cache/
@@ -23,3 +27,8 @@ venv/
 .idea/
 .vscode/
 .DS_Store
+
+build
+
+.gradle
+.claude

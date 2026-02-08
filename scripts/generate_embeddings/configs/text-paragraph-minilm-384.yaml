@@ -1,0 +1,17 @@
+# Set 2: low-dim + paragraph
+source: text_dir
+text_dir:
+  path: index-builder/src/main/resources/test-texts
+  glob: "**/*.txt"
+  encoding: utf-8
+granularity: paragraph
+djl:
+  url: http://localhost:8091
+  model_name: all-MiniLM-L6-v2
+  dim: 384
+  batch_size: 32
+  timeout_sec: 240
+output:
+  output_dir: index-builder/src/main/resources/embeddings
+  name: unit-data-384-paragraph
+  num_query_vectors: 500

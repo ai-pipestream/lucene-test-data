@@ -8,7 +8,7 @@ from __future__ import annotations
 import argparse
 import sys
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 # Allow running from repo root or from this directory
 _SCRIPT_DIR = Path(__file__).resolve().parent
@@ -103,6 +103,7 @@ def main() -> int:
     ap.add_argument("--text-dir-path", type=Path, help="Override text_dir.path")
     ap.add_argument("--granularity", choices=("sentence", "paragraph"), help="Override granularity")
     ap.add_argument("--output-dir", type=Path, help="Override output.output_dir")
+    ap.add_argument("--output-name", type=str, help="Override output.name (named subdir: e.g. unit-data, wiki-1024-sentences)")
     ap.add_argument("--batch-size", type=int, help="Override djl.batch_size")
     ap.add_argument("--max-docs", type=int, help="Override max_docs (wikipedia or text_dir)")
     ap.add_argument("--model-name", type=str, help="Override djl.model_name (e.g. all-MiniLM-L6-v2 or bge-m3)")
@@ -124,6 +125,8 @@ def main() -> int:
         cfg["granularity"] = args.granularity
     if args.output_dir:
         cfg.setdefault("output", {})["output_dir"] = str(args.output_dir)
+    if args.output_name is not None:
+        cfg.setdefault("output", {})["name"] = args.output_name
     if args.batch_size is not None:
         cfg.setdefault("djl", {})["batch_size"] = args.batch_size
     if args.max_docs is not None:
@@ -168,19 +171,29 @@ def main() -> int:
     print(f"  Got {len(embeddings)} vectors")
 
     out_cfg = cfg.get("output", {})
-    output_dir = Path(out_cfg.get("output_dir", "data/embeddings"))
+    base_output_dir = Path(out_cfg.get("output_dir", "data/embeddings"))
     num_queries = int(out_cfg.get("num_query_vectors", 5000))
-    stem = out_cfg.get("output_stem")
-    if not stem:
-        source_id = get_source_id(cfg)
-        gran = cfg.get("granularity", "sentence")
-        stem = f"{source_id}-{gran}-{model_name}-{dim}d"
-    stem = stem.replace(" ", "-")
+    output_name = out_cfg.get("name")  # e.g. unit-data, wiki-1024-sentences
 
-    output_dir.mkdir(parents=True, exist_ok=True)
-    docs_vec_path = output_dir / f"{stem}-docs.vec"
-    queries_vec_path = output_dir / f"{stem}-queries.vec"
-    meta_path = output_dir / f"{stem}-meta.json"
+    if output_name:
+        # All files go in a named subdir with fixed filenames
+        output_dir = base_output_dir / output_name.strip()
+        output_dir.mkdir(parents=True, exist_ok=True)
+        docs_vec_path = output_dir / "docs.vec"
+        queries_vec_path = output_dir / "queries.vec"
+        meta_path = output_dir / "meta.json"
+    else:
+        stem = out_cfg.get("output_stem")
+        if not stem:
+            source_id = get_source_id(cfg)
+            gran = cfg.get("granularity", "sentence")
+            stem = f"{source_id}-{gran}-{model_name}-{dim}d"
+        stem = stem.replace(" ", "-")
+        output_dir = base_output_dir
+        output_dir.mkdir(parents=True, exist_ok=True)
+        docs_vec_path = output_dir / f"{stem}-docs.vec"
+        queries_vec_path = output_dir / f"{stem}-queries.vec"
+        meta_path = output_dir / f"{stem}-meta.json"
 
     # Hold out first num_queries as queries (same as luceneutil convention)
     nq = min(num_queries, len(embeddings))
@@ -206,8 +219,10 @@ def main() -> int:
         "num_query_vectors": nq,
         "output_docs_vec": str(docs_vec_path),
         "output_queries_vec": str(queries_vec_path),
-        "created_at": datetime.utcnow().isoformat() + "Z",
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
     }
+    if output_name:
+        manifest["dataset_name"] = output_name.strip()
     write_manifest(meta_path, manifest)
 
     print(f"Wrote {docs_vec_path}")

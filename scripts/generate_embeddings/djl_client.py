@@ -13,20 +13,32 @@ def embed_batch(
     texts: List[str],
     dim: int,
     timeout_sec: int = 120,
+    max_retries: int = 3,
 ) -> List[List[float]]:
     """
     POST a list of texts to DJL /predictions/{model_name}. Expects JSON body as list of strings.
     Returns list of embedding vectors; pads or truncates to dim if needed.
+    Retries on transient 503 errors with exponential backoff.
     """
     if not texts:
         return []
     endpoint = f"{url.rstrip('/')}/predictions/{model_name}"
-    try:
-        resp = requests.post(endpoint, json=texts, timeout=timeout_sec)
-        resp.raise_for_status()
-        batch_embs = resp.json()
-    except requests.RequestException as e:
-        raise RuntimeError(f"DJL request failed: {e}") from e
+    last_err = None
+    for attempt in range(max_retries + 1):
+        try:
+            resp = requests.post(endpoint, json=texts, timeout=timeout_sec)
+            resp.raise_for_status()
+            batch_embs = resp.json()
+            break
+        except requests.RequestException as e:
+            last_err = e
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status == 503 and attempt < max_retries:
+                wait = 2 ** attempt
+                print(f"  [retry {attempt+1}/{max_retries}] 503 from DJL, waiting {wait}s...")
+                time.sleep(wait)
+                continue
+            raise RuntimeError(f"DJL request failed: {e}") from e
 
     out = []
     for emb in batch_embs:

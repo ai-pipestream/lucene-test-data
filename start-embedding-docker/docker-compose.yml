@@ -9,6 +9,10 @@ services:
     environment:
       - MODEL_LOADING_TIMEOUT=300
       - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+      # Default image sets -Dai.djl.default_engine=PyTorch, which makes the
+      # Java process init CUDA and waste ~8GB VRAM. Since our models use
+      # engine=Python, the Java side doesn't need GPU at all.
+      - JAVA_OPTS=-Xmx16g -Xms16g -XX:+ExitOnOutOfMemoryError
     deploy:
       resources:
         reservations:

@@ -38,9 +38,12 @@ djl:
   timeout_sec: 240
 
 # --- Output ---
+# With name: all files go in output_dir/name/ as docs.vec, queries.vec, meta.json (e.g. unit-data, wiki-1024-sentences).
+# Without name: use output_stem for filenames (default = {source_id}-{granularity}-{model}-{dim}d).
 output:
   output_dir: data/embeddings
-  output_stem: null     # optional; default = {source_id}-{granularity}-{model}-{dim}d
+  name: null            # optional; e.g. "unit-data", "wiki-1024-sentences"
+  output_stem: null    # used only when name is not set
   num_query_vectors: 5000
 
 # --- Optional: run all 4 sets in one go (override with CLI for single run) ---

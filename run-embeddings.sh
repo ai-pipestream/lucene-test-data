@@ -47,7 +47,17 @@ fi
 
 echo ""
 echo "=== Step 3: Install Python dependencies ==="
-pip install --quiet -r scripts/generate_embeddings/requirements.txt
+if pip install --quiet -r scripts/generate_embeddings/requirements.txt 2>/dev/null; then
+    echo "  Dependencies installed."
+else
+    if python3 -c "import yaml, requests" 2>/dev/null; then
+        echo "  pip install blocked (PEP 668), but pyyaml + requests already available."
+    else
+        echo "ERROR: Cannot install dependencies and they are not available." >&2
+        echo "Create a venv: python3 -m venv .venv && source .venv/bin/activate" >&2
+        exit 1
+    fi
+fi
 
 echo ""
 echo "=== Step 4: Generate embeddings ==="
