@@ -71,3 +71,38 @@ Run the index builder (dataset by name or path, output index dir):
 - `--batch-size N` – documents per `addDocuments` batch (default 1000). Larger = faster indexing, more RAM.
 
 Datasets: each is a directory with `docs.vec`, `queries.vec`, `meta.json`. Built-in names (from resources): `unit-data-1024-sentence`, `unit-data-1024-paragraph`. When MiniLM is available, add `unit-data-384-sentence`, `unit-data-384-paragraph` via the embedding script.
+
+## Run shard KNN test (recall + latency)
+
+From **repo root** (so paths to `data/` resolve):
+
+```bash
+cd index-builder
+./gradlew runShardTest --args="--shards ../data/indices/wiki-1024-sentences/shards-8 --queries ../data/embeddings/wiki-1024-sentences/queries.vec --docs ../data/embeddings/wiki-1024-sentences --dim 1024"
+```
+
+**Important:** Pass `--docs` with the **embedding dataset directory** (or path to `docs.vec`) so recall vs exact NN is computed. Without `--docs`, recall is reported as N/A. The dataset dir may contain `docs.vec` or `docs-shard-*.vec`; both are supported.
+
+From **repo root** you can run tests (with recall) for all datasets in one go:
+
+```bash
+./run-shard-tests.sh           # 8 shards
+./run-shard-tests.sh --shards 4
+```
+
+**Luceneutil:** Our pipeline uses the same recall definition (exact top-K by brute-force cosine, recall = |retrieved ∩ exact| / K) and the same `.vec` format (raw little-endian float32). You do **not** need luceneutil to get recall for these shard tests. If you want to run luceneutil’s own benchmark (single index, different tooling), our `docs.vec` / `queries.vec` are compatible; luceneutil would build its own index and exact-NN cache from those files.
+
+## Baseline vs PR (collaborative HNSW)
+
+- **Baseline (main / stock Lucene):** Use default classpath (Maven `lucene-core:10.3.2`). Run shard test with `--docs` for recall; save output as baseline.
+- **PR 15676 (collaborative HNSW):** Build the Lucene PR (e.g. `./gradlew :lucene:core:jar` in the Lucene repo), then run the index-builder with the PR JAR and pass `--collaborative` so the test uses the shared min-score accumulator across shards (fewer node visits, same recall).
+
+```bash
+# 1) Save baseline (stock Lucene, no collaborative)
+./gradlew runShardTest --args="--shards ../data/indices/.../shards-8 --queries ... --docs ... --dim 1024" | tee baseline-main-recall.txt
+
+# 2) Run with PR JAR + collaborative
+./gradlew runShardTest -PluceneJar=/path/to/lucene/lucene/core/build/libs/lucene-core-11.0.0-SNAPSHOT.jar --args="... --collaborative" | tee pr-15676-recall.txt
+```
+
+Without `--collaborative`, the test does **not** send updates into Lucene: each shard runs a normal KNN search. With `--collaborative` and the PR JAR on the classpath, the test uses `CollaborativeKnnFloatVectorQuery` and a shared `LongAccumulator` so Lucene's collaborative collector can prune using the minimum score from other shards.

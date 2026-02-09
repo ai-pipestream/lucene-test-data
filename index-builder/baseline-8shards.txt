@@ -1,0 +1,33 @@
+> Task :compileJava UP-TO-DATE
+> Task :processResources UP-TO-DATE
+> Task :classes UP-TO-DATE
+
+> Task :runShardTest
+Shards: /work/opensearch-grpc-knn/shards_to_test/index-simplewiki-8shards (8 shards)
+Queries: src/main/resources/embeddings/unit-data-1024-sentence/queries.vec dim=1024
+Recall: N/A (no --docs)
+K values: [10, 100, 1000, 10000]
+
+WARNING: A restricted method in java.lang.foreign.Linker has been called
+WARNING: java.lang.foreign.Linker::downcallHandle has been called by org.apache.lucene.store.PosixNativeAccess in an unnamed module (file:/home/krickert/.gradle/caches/modules-2/files-2.1/org.apache.lucene/lucene-core/10.3.2/e46afe546d01bb56a87860ad60889945f29e7e51/lucene-core-10.3.2.jar)
+WARNING: Use --enable-native-access=ALL-UNNAMED to avoid a warning for callers in this module
+WARNING: Restricted methods will be blocked in a future release unless native access is enabled
+
+Feb 08, 2026 4:52:22 PM org.apache.lucene.internal.vectorization.VectorizationProvider lookup
+WARNING: Java vector incubator module is not readable. For optimal vector performance, pass '--add-modules jdk.incubator.vector' to enable Vector API.
+nDoc=2144577 numShards=8 num_queries=500
+
+topK	latency_ms	recall	lookups_saved	nDoc	numShards	num_queries
+10	28	N/A	N/A	2144577	8	500
+100	64	N/A	N/A	2144577	8	500
+1000	191	N/A	N/A	2144577	8	500
+10000	690	N/A	N/A	2144577	8	500
+
+SUMMARY	index-simplewiki-8shards	10	28	N/A	N/A	2144577	8	500
+SUMMARY	index-simplewiki-8shards	100	64	N/A	N/A	2144577	8	500
+SUMMARY	index-simplewiki-8shards	1000	191	N/A	N/A	2144577	8	500
+SUMMARY	index-simplewiki-8shards	10000	690	N/A	N/A	2144577	8	500
+
+BUILD SUCCESSFUL in 8m 9s
+3 actionable tasks: 1 executed, 2 up-to-date
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.3.0/userguide/configuration_cache_enabling.html

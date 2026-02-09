@@ -1,0 +1,6 @@
+# Override: do not mount BGE-M3 so DJL starts with no models. Load MiniLM via load-models.sh.
+# Use: docker compose -f docker-compose.yml -f docker-compose.minilm-only.yml up -d
+services:
+  djl-serving:
+    volumes:
+      - /work/opensearch-grpc-knn:/work:ro

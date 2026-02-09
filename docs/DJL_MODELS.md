@@ -49,6 +49,16 @@ MiniLM is loaded via the management API (not auto-load):
 start-embedding-docker/load-models.sh
 ```
 
+### Restart without BGE-M3 (MiniLM only)
+
+When 1024d embeddings are already done and you only need 384d, start DJL without mounting BGE-M3 so only MiniLM loads (avoids GPU OOM from having both models):
+
+```bash
+start-embedding-docker/restart-djl-minilm-only.sh
+```
+
+This uses `docker-compose.minilm-only.yml` (no bge-m3 volume), starts the server, runs `load-models.sh`, and waits for **all-MiniLM-L6-v2** READY.
+
 This registers **all-MiniLM-L6-v2** at `/predictions/all-MiniLM-L6-v2`. To use it for embeddings, override the model in config or CLI:
 
 ```bash
@@ -77,4 +87,6 @@ When the model shows `"status": "READY"`, you can run the embedding script.
 - **Container exits immediately:** Check `docker compose logs` in `start-embedding-docker/`. Common: model loading failure (see below).
 - **Model fails to load:** The first startup downloads ~2.3 GB from HuggingFace. Ensure network access and sufficient disk space.
 - **OOM on GPU:** BGE-M3 uses ~2 GB VRAM (fp16). Reduce `batch_size` in config if inference OOMs on long documents.
+- **CUDA OOM when loading MiniLM (or “400 Bad Request” for MiniLM):** On a single ~16 GB GPU, **only one model can be loaded at a time**. If BGE-M3 is already loaded (~8+ GiB), loading MiniLM will OOM. Fix: **unload the other model** before loading the one you need:
+  - Unload via API: `curl -X DELETE "http://localhost:8091/models/bge_m3"` (or `all-MiniLM-L6-v2`), then load the other with `load-models.sh` or restart. For 384d embeddings, unload `bge_m3` first, then load MiniLM; for 1024d, do the reverse or restart DJL with only BGE-M3.
 - **Prediction returns 404:** Model name is `bge_m3` (underscore), not `bge-m3` (hyphen).

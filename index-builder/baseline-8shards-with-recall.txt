@@ -1,0 +1,45 @@
+> Task :compileJava UP-TO-DATE
+> Task :processResources UP-TO-DATE
+> Task :classes UP-TO-DATE
+
+> Task :runShardTest
+WARNING: Using incubator modules: jdk.incubator.vector
+Shards: /work/opensearch-grpc-knn/shards_to_test/index-simplewiki-8shards (8 shards)
+Search threads: 8 (default)
+Query threads: 1
+Queries: /work/embedding-archive-data/embeddings/simplewiki-sentence-bge_m3-1024d-queries.vec dim=1024
+Docs (for recall): /work/embedding-archive-data/embeddings/simplewiki-sentence-bge_m3-1024d-docs.vec
+K values: [10, 100, 1000, 10000]
+
+Feb 08, 2026 6:11:21 PM org.apache.lucene.internal.vectorization.PanamaVectorizationProvider <init>
+INFO: Java vector incubator API enabled; uses preferredBitSize=512; FMA enabled
+nDoc=2144577 numShards=8 num_queries=5000
+
+topK	latency_ms	recall	lookups_saved	nDoc	numShards	num_queries
+10	2	0.8298	N/A	2144577	8	5000
+100	5	0.8861	N/A	2144577	8	5000
+1000	20	0.9139	N/A	2144577	8	5000
+10000	102	0.9458	N/A	2144577	8	5000
+
+SUMMARY	index-simplewiki-8shards	10	2	0.8298	N/A	2144577	8	5000
+SUMMARY	index-simplewiki-8shards	100	5	0.8861	N/A	2144577	8	5000
+SUMMARY	index-simplewiki-8shards	1000	20	0.9139	N/A	2144577	8	5000
+SUMMARY	index-simplewiki-8shards	10000	102	0.9458	N/A	2144577	8	5000
+
+BUILD SUCCESSFUL in 6h 47m 50s
+3 actionable tasks: 1 executed, 2 up-to-date
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.3.0/userguide/configuration_cache_enabling.html
+8	5000
+10000	702	0.9464	N/A	2144577	8	5000
+
+SUMMARY	index-simplewiki-8shards	10	21	0.8355	N/A	2144577	8	5000
+SUMM10000	696	0.9464	N/A	2144577	8	5000
+
+SUMMARY	index-simplewiki-8shards	10	21	0.8355	N/A	2144577	8	5000
+SUMMARY	index-simplewiki-8shards	100	46	0.8900	N/A	2144577	8	5000
+SUMMARY	index-simplewiki-8shards	1000	153	0.9162	N/A	2144577	8	5000
+SUMMARY	index-simplewiki-8shards	10000	696	0.9464	N/A	2144577	8	5000
+
+BUILD SUCCESSFUL in 8h 2m 46s
+3 actionable tasks: 1 executed, 2 up-to-date
+Consider enabling configuration cache to speed up this build: https://docs.gradle.org/9.3.0/userguide/configuration_cache_enabling.html
