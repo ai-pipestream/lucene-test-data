@@ -11,6 +11,7 @@ import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -36,10 +37,12 @@ public final class RunShardTest {
         int searchThreads = 0; // 0 = default
         int queryThreads = 1;  // parallel queries (1 = sequential)
         boolean collaborative = false;
+        boolean progress = false;
         int[] kValues = { 10, 100, 1000, 10_000 };
         for (int i = 0; i < args.length; i++) {
             switch (args[i].toLowerCase(Locale.ROOT)) {
                 case "--collaborative" -> collaborative = true;
+                case "--progress" -> progress = true;
                 case "--shards", "-s" -> {
                     if (i + 1 >= args.length) usage("Missing value for --shards");
                     shardsDir = Path.of(args[++i]);
@@ -113,6 +116,9 @@ public final class RunShardTest {
         if (collaborative) {
             System.out.println("Collaborative HNSW: enabled (PR 15676; shared min-score across shards)");
         }
+        if (progress) {
+            System.out.println("Progress: enabled (every 1000 queries per K, to stderr)");
+        }
         System.out.println();
 
         List<float[]> queries = List.of();
@@ -144,8 +150,8 @@ public final class RunShardTest {
             System.out.println("nDoc=" + nDoc + " numShards=" + numShards + " num_queries=" + numQueries);
             System.out.println();
 
-            // Header for table (lookups_saved: N/A unless Lucene exposes visit count)
-            System.out.println("topK\tlatency_ms\trecall\tlookups_saved\tnDoc\tnumShards\tnum_queries");
+            // recall = merged recall: (merged top-K from all shards) vs exact global top-K over full doc set
+            System.out.println("topK\tlatency_ms\tmerged_recall\tlookups_saved\tnDoc\tnumShards\tnum_queries");
             List<String> summaryLines = new ArrayList<>();
 
             ExecutorService queryExecutor = queryThreads > 1 ? Executors.newFixedThreadPool(queryThreads) : null;
@@ -154,14 +160,19 @@ public final class RunShardTest {
             final ExactNN exactNNRef = exactNN;
             try {
                 for (int K : kValues) {
+                    if (progress) {
+                        System.err.println("Running K=" + K + " (" + numQueries + " queries)...");
+                    }
                     long totalLatencyMs;
                     double sumRecall;
                     int recallCount;
                     long totalLookupsSaved;
                     int lookupsSavedCount;
+                    final AtomicInteger progressDone = progress ? new AtomicInteger(0) : null;
                     if (queryExecutor != null) {
                         final int kVal = K;
                         final boolean collaborativeRef = collaborative;
+                        final boolean progressRef = progress;
                         int chunks = Math.min(queryThreads, numQueries);
                         int chunkSize = (numQueries + chunks - 1) / chunks;
                         List<Callable<ChunkResult>> tasks = new ArrayList<>(chunks);
@@ -171,7 +182,7 @@ public final class RunShardTest {
                             if (start >= end) continue;
                             final int chunkStart = start;
                             final int chunkEnd = end;
-                            tasks.add(() -> runQueryChunk(testerRef, queriesRef, exactNNRef, kVal, chunkStart, chunkEnd, collaborativeRef));
+                            tasks.add(() -> runQueryChunk(testerRef, queriesRef, exactNNRef, kVal, chunkStart, chunkEnd, collaborativeRef, progressRef, progressDone, numQueries));
                         }
                         List<Future<ChunkResult>> futures = queryExecutor.invokeAll(tasks);
                         totalLatencyMs = 0;
@@ -205,6 +216,9 @@ public final class RunShardTest {
                                 sumRecall += ShardKnnTester.recall(res.topIds, exact);
                                 recallCount++;
                             }
+                            if (progress && (q + 1) % 1000 == 0) {
+                                System.err.println("  K=" + K + " progress: " + (q + 1) + "/" + numQueries);
+                            }
                         }
                     }
                     long avgLatencyMs = numQueries > 0 ? totalLatencyMs / numQueries : 0;
@@ -235,6 +249,8 @@ public final class RunShardTest {
         }
     }
 
+    private static final Object PROGRESS_LOCK = new Object();
+
     private static ChunkResult runQueryChunk(
             ShardKnnTester tester,
             List<float[]> queries,
@@ -242,7 +258,10 @@ public final class RunShardTest {
             int K,
             int start,
             int end,
-            boolean collaborative) throws IOException {
+            boolean collaborative,
+            boolean progress,
+            AtomicInteger progressDone,
+            int numQueries) throws IOException {
         long totalLatencyMs = 0;
         double sumRecall = 0;
         int recallCount = 0;
@@ -259,6 +278,14 @@ public final class RunShardTest {
                 int[] exact = exactNN.exactTopK(queries.get(q), K);
                 sumRecall += ShardKnnTester.recall(res.topIds, exact);
                 recallCount++;
+            }
+            if (progress && progressDone != null) {
+                int d = progressDone.incrementAndGet();
+                if (d % 1000 == 0) {
+                    synchronized (PROGRESS_LOCK) {
+                        System.err.println("  K=" + K + " progress: " + d + "/" + numQueries);
+                    }
+                }
             }
         }
         return new ChunkResult(totalLatencyMs, sumRecall, recallCount, totalLookupsSaved, lookupsSavedCount);
@@ -308,12 +335,14 @@ public final class RunShardTest {
         System.err.println("  --shards   Directory containing shard-0, shard-1, ...");
         System.err.println("  --queries  Path to queries.vec (raw float32, little-endian)");
         System.err.println("  --dim      Vector dimension");
-        System.err.println("  --docs     Path to docs.vec or dataset dir (with docs.vec or docs-shard-*.vec) for recall");
+        System.err.println("  --docs     Path to docs.vec or dataset dir (with docs.vec or docs-shard-*.vec) for merged recall");
+        System.err.println("  merged_recall: (merged top-K from all shards) vs exact global top-K; the stat that matters for collaborative HNSW.");
         System.err.println("  lookups_saved: reported when Lucene exposes visit count (else N/A)");
         System.err.println("  --k        Comma-separated K values (default: 10,100,1000,10000)");
         System.err.println("  --search-threads  Threads for shard search (default: num shards, or numShards*queryThreads)");
         System.err.println("  --query-threads   Parallel queries (default: 1). Use 2-3 to use more cores.");
         System.err.println("  --collaborative   Use collaborative HNSW (PR 15676): shared min-score across shards for pruning. Requires PR Lucene JAR.");
+        System.err.println("  --progress       Print progress every 1000 queries per K (to stderr). Does not affect recall or latency results.");
         System.exit(msg == null ? 0 : 1);
     }
 }

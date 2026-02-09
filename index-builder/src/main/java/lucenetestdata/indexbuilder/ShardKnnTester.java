@@ -11,6 +11,8 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.LongAccumulator;
 import org.apache.lucene.index.DirectoryReader;
+import org.apache.lucene.index.IndexReader;
+import org.apache.lucene.index.MultiReader;
 import org.apache.lucene.index.StoredFields;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.KnnFloatVectorQuery;
@@ -26,6 +28,8 @@ public final class ShardKnnTester implements AutoCloseable {
 
     private final List<IndexSearcher> searchers;
     private final List<DirectoryReader> readers;
+    private final IndexReader multiReader;
+    private final IndexSearcher multiSearcher;
     private final String vectorField;
     private final String idField;
     private final int dim;
@@ -52,6 +56,10 @@ public final class ShardKnnTester implements AutoCloseable {
         this.searchExecutor = searchThreads > 1
             ? Executors.newFixedThreadPool(Math.min(searchThreads, searchers.size()))
             : null;
+        this.multiReader = new MultiReader(readers.toArray(new IndexReader[0]), false);
+        this.multiSearcher = this.searchExecutor != null
+            ? new IndexSearcher(multiReader, this.searchExecutor)
+            : new IndexSearcher(multiReader);
     }
 
     public int getNumShards() {
@@ -70,6 +78,9 @@ public final class ShardKnnTester implements AutoCloseable {
     public void close() throws IOException {
         if (searchExecutor != null) {
             searchExecutor.shutdown();
+        }
+        if (multiReader != null) {
+            multiReader.close();
         }
         for (DirectoryReader r : readers) {
             r.close();
@@ -95,7 +106,19 @@ public final class ShardKnnTester implements AutoCloseable {
         LongAccumulator minScoreAcc = useCollaborative ? new LongAccumulator(Long::max, Long.MIN_VALUE) : null;
         long start = System.nanoTime();
         List<ScoreDocWithGlobalId> all;
-        if (searchExecutor != null) {
+        // Collaborative across shards needs a global docId space for safe tie-breaking.
+        // Use a MultiReader-backed IndexSearcher so docBase/DocIDs are global across shards,
+        // while the shared bar updates during the search.
+        if (useCollaborative) {
+            KnnFloatVectorQuery query = new CollaborativeKnnFloatVectorQuery(vectorField, queryVec, K, minScoreAcc);
+            TopDocs td = multiSearcher.search(query, K);
+            StoredFields stored = multiReader.storedFields();
+            all = new ArrayList<>(td.scoreDocs.length);
+            for (ScoreDoc sd : td.scoreDocs) {
+                int globalId = stored.document(sd.doc).getField(idField).numericValue().intValue();
+                all.add(new ScoreDocWithGlobalId(globalId, sd.score));
+            }
+        } else if (searchExecutor != null) {
             List<Future<List<ScoreDocWithGlobalId>>> futures = new ArrayList<>(searchers.size());
             for (int s = 0; s < searchers.size(); s++) {
                 final int shardIndex = s;
@@ -153,7 +176,7 @@ public final class ShardKnnTester implements AutoCloseable {
         return list;
     }
 
-    /** Recall = |retrieved ∩ exact| / K */
+    /** Merged recall = |retrieved ∩ exact| / K. retrieved = merged top-K from all shards; exactTopK = exact global top-K. */
     public static float recall(int[] retrieved, int[] exactTopK) {
         if (retrieved.length == 0) return 0;
         Set<Integer> exactSet = new HashSet<>();

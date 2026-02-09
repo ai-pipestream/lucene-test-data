@@ -9,6 +9,9 @@
 # Usage:
 #   ./run-shard-tests.sh              # test all datasets, 8 shards
 #   ./run-shard-tests.sh --shards 4   # use shards-4 instead of shards-8
+#   ./run-shard-tests.sh --collaborative   # use collaborative HNSW (PR 15676); use with -PluceneJar=...
+#
+# For PR run: LUCENE_JAR=/path/to/lucene-core.jar ./run-shard-tests.sh --collaborative
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -18,17 +21,31 @@ GRADLE="index-builder/gradlew -p index-builder"
 EMBEDDINGS_BASE="$SCRIPT_DIR/data/embeddings"
 INDICES_BASE="$SCRIPT_DIR/data/indices"
 SHARDS=8
+COLLABORATIVE=""
+# Parallel queries (exact NN + search). Default 32.
+QUERY_THREADS="${QUERY_THREADS:-32}"
+SEARCH_THREADS="${SEARCH_THREADS:-32}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --shards) SHARDS="$2"; shift 2 ;;
+        --collaborative) COLLABORATIVE="--collaborative"; shift ;;
+        --query-threads) QUERY_THREADS="$2"; shift 2 ;;
+        --search-threads) SEARCH_THREADS="$2"; shift 2 ;;
         -h|--help)
-            echo "Usage: $0 [--shards N]"
+            echo "Usage: $0 [--shards N] [--collaborative] [--query-threads N] [--search-threads N]"
             echo "  Runs RunShardTest with --docs so recall is computed. Default: shards-8."
+            echo "  --query-threads: parallel queries (default 64). QUERY_THREADS env overrides."
+            echo "  --search-threads: shard search executor size (default 64). SEARCH_THREADS env overrides."
+            echo "  --collaborative: use collaborative HNSW (PR 15676). Set LUCENE_JAR for PR JAR."
             exit 0 ;;
         *) echo "Unknown option: $1"; exit 1 ;;
     esac
 done
+
+if [ -n "$LUCENE_JAR" ]; then
+    GRADLE="$GRADLE -PluceneJar=$LUCENE_JAR"
+fi
 
 DATASETS=(
     "wiki-1024-sentences"
@@ -65,7 +82,7 @@ for ds in "${DATASETS[@]}"; do
     echo "────────────────────────────────────────────────────"
     echo "  $ds  dim=$dim  index=$index_dir"
     echo "────────────────────────────────────────────────────"
-    $GRADLE -q runShardTest --args="--shards $index_dir --queries $embed_dir/queries.vec --docs $embed_dir --dim $dim"
+    $GRADLE -q runShardTest --args="--shards $index_dir --queries $embed_dir/queries.vec --docs $embed_dir --dim $dim --query-threads $QUERY_THREADS --search-threads $SEARCH_THREADS $COLLABORATIVE"
 done
 
 echo ""

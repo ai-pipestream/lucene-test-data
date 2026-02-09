@@ -16,11 +16,15 @@ repositories {
 }
 
 val luceneJar: String? = findProperty("luceneJar") as String?
+val luceneBackwardCodecsJar: String? = findProperty("luceneBackwardCodecsJar") as String?
 
 dependencies {
     // Lucene: baseline = Maven 10.3.2; override with -PluceneJar=/path/to/lucene-core.jar for new-Lucene runs
     if (luceneJar != null) {
         implementation(files(luceneJar))
+        if (luceneBackwardCodecsJar != null) {
+            implementation(files(luceneBackwardCodecsJar))
+        }
     } else {
         implementation("org.apache.lucene:lucene-core:10.3.2")
     }

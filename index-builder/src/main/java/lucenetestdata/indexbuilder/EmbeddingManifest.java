@@ -1,7 +1,6 @@
 package lucenetestdata.indexbuilder;
 
 import com.google.gson.annotations.SerializedName;
-import java.util.List;
 import java.util.Objects;
 
 /**
@@ -29,13 +28,12 @@ public final class EmbeddingManifest {
     private String createdAt;
     @SerializedName("dataset_name")
     private String datasetName;
-
     @SerializedName("num_shards")
     private int numShards;
     @SerializedName("shard_sizes")
-    private List<Integer> shardSizes;
+    private java.util.List<Integer> shardSizes;
     @SerializedName("shard_doc_offsets")
-    private List<Integer> shardDocOffsets;
+    private java.util.List<Integer> shardDocOffsets;
 
     public String getSource() { return source; }
     public void setSource(String source) { this.source = source; }
@@ -71,13 +69,7 @@ public final class EmbeddingManifest {
     public void setDatasetName(String datasetName) { this.datasetName = datasetName; }
 
     public int getNumShards() { return numShards; }
-    public void setNumShards(int numShards) { this.numShards = numShards; }
-
-    public List<Integer> getShardSizes() { return shardSizes; }
-    public void setShardSizes(List<Integer> shardSizes) { this.shardSizes = shardSizes; }
-
-    public List<Integer> getShardDocOffsets() { return shardDocOffsets; }
-    public void setShardDocOffsets(List<Integer> shardDocOffsets) { this.shardDocOffsets = shardDocOffsets; }
-
+    public java.util.List<Integer> getShardSizes() { return shardSizes; }
+    public java.util.List<Integer> getShardDocOffsets() { return shardDocOffsets; }
     public boolean isSharded() { return numShards > 1; }
 }

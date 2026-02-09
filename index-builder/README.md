@@ -86,9 +86,12 @@ cd index-builder
 From **repo root** you can run tests (with recall) for all datasets in one go:
 
 ```bash
-./run-shard-tests.sh           # 8 shards
+./run-shard-tests.sh           # 8 shards, 8 query threads (default)
 ./run-shard-tests.sh --shards 4
+./run-shard-tests.sh --query-threads 16   # use more CPU; faster when --docs is used
 ```
+
+**Why `--query-threads` matters for recall runs:** With `--docs`, the test computes exact top-K over all docs (2.1M × 1024 dot products) per query for recall. That work is single-threaded per query. With default `--query-threads 1`, one core does all of it and the run can take many hours. Use `--query-threads 8` (or more) so multiple queries run in parallel and the run finishes in a fraction of the time.
 
 **Luceneutil:** Our pipeline uses the same recall definition (exact top-K by brute-force cosine, recall = |retrieved ∩ exact| / K) and the same `.vec` format (raw little-endian float32). You do **not** need luceneutil to get recall for these shard tests. If you want to run luceneutil’s own benchmark (single index, different tooling), our `docs.vec` / `queries.vec` are compatible; luceneutil would build its own index and exact-NN cache from those files.
 

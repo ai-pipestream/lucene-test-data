@@ -64,14 +64,14 @@ public final class BuildIndex {
             System.out.println("Dataset: " + resolved.getDatasetDir());
             System.out.println("  dim=" + resolved.getManifest().getDim()
                 + " num_docs=" + resolved.getManifest().getNumDocs());
-            if (resolved.isSharded()) {
-                System.out.println("  pre-sharded: " + resolved.getManifest().getNumShards() + " vec shards");
-            }
             if (numShards > 1) {
                 System.out.println("Building " + numShards + " shard indices under: " + outputPath
                     + " (batch=" + batchSize + ", threads=" + numThreads + ")");
             } else {
                 System.out.println("Building index at: " + outputPath + " (batch=" + batchSize + ")");
+            }
+            if (resolved.isSharded()) {
+                System.out.println("  Pre-sharded dataset: " + resolved.getManifest().getNumShards() + " vec shards");
             }
             IndexBuilder.ProgressReporter progress = (shard, total, inShard, written) -> {
                 if (total > 1) {
@@ -94,7 +94,7 @@ public final class BuildIndex {
         System.err.println("  --output      Lucene index output directory (or base dir when --num-shards > 1)");
         System.err.println("  --num-shards  Number of shard indices to create (default: 1). Output: <output>/shard-0, shard-1, ...");
         System.err.println("  --batch-size  Documents per addDocuments batch (default: 1000). Larger = faster indexing, more RAM.");
-        System.err.println("  --threads     Concurrent shard build threads (default: 1). Each thread loads+writes one shard at a time.");
+        System.err.println("  --threads     Number of concurrent threads for shard building (default: 1).");
         System.err.println("  --base        Base directory containing an 'embeddings' subdir (e.g. data or repo root)");
         System.exit(error == null ? 0 : 1);
     }

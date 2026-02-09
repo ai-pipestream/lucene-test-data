@@ -1,4 +1,4 @@
-# Loading DJL embedding models
+run# Loading DJL embedding models
 
 The embedding script calls `POST /predictions/<model_name>` with a JSON array of strings. Models must be available in DJL before running the pipeline.
 
