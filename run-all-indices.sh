@@ -43,7 +43,7 @@ DATASETS=(
     "wiki-384-sentences"
     "wiki-384-paragraphs"
 )
-SHARD_COUNTS=(2 4 8 16)
+SHARD_COUNTS=(1 2 4 8 16)
 
 # ── Step 1: Build 16-shard indices from pre-sharded vec files ────────
 echo "═══════════════════════════════════════════════════════"
@@ -114,6 +114,25 @@ for ds in "${DATASETS[@]}"; do
             FAILED=$((FAILED + 1))
         fi
     done
+
+    # Merge 2 → 1 shard (single index baseline)
+    one_dir="$ds_index/shards-1"
+    if [ -d "$one_dir/shard-0" ]; then
+        echo "  1-shard index already exists. Skipping merge."
+        SKIPPED=$((SKIPPED + 1))
+    elif [ ! -d "$ds_index/shards-2/shard-1" ]; then
+        echo "  SKIP: 2-shard index missing; cannot merge to 1 shard."
+        SKIPPED=$((SKIPPED + 1))
+    else
+        echo "  Merging 2 → 1 shard..."
+        if $GRADLE -q mergeShards --args="--input $ds_index/shards-2 --output $one_dir --source-shards 2 --target-shards 1 --threads 1"; then
+            MERGED=$((MERGED + 1))
+            echo "  Done: $one_dir"
+        else
+            echo "  ERROR: Merge failed for $ds shards-1"
+            FAILED=$((FAILED + 1))
+        fi
+    fi
 done
 
 # ── Summary ───────────────────────────────────────────────────────────

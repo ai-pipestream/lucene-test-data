@@ -9,13 +9,14 @@ import java.util.Set;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.LongAccumulator;
+import java.util.function.IntUnaryOperator;
 import org.apache.lucene.index.DirectoryReader;
 import org.apache.lucene.index.IndexReader;
 import org.apache.lucene.index.MultiReader;
 import org.apache.lucene.index.StoredFields;
 import org.apache.lucene.search.IndexSearcher;
-import org.apache.lucene.search.KnnFloatVectorQuery;
 import org.apache.lucene.search.ScoreDoc;
 import org.apache.lucene.search.TopDocs;
 import org.apache.lucene.store.FSDirectory;
@@ -95,22 +96,24 @@ public final class ShardKnnTester implements AutoCloseable {
      * so later shards can prune; only effective when Lucene PR JAR is on classpath.
      */
     public Result searchOne(float[] queryVec, int K) throws IOException {
-        return searchOne(queryVec, K, null, false);
+        return searchOne(queryVec, K, null, false, false);
     }
 
     public Result searchOne(float[] queryVec, int K, SharedPruningState sharedState) throws IOException {
-        return searchOne(queryVec, K, sharedState, false);
+        return searchOne(queryVec, K, sharedState, false, false);
     }
 
-    public Result searchOne(float[] queryVec, int K, SharedPruningState sharedState, boolean useCollaborative) throws IOException {
+    public Result searchOne(float[] queryVec, int K, SharedPruningState sharedState, boolean useCollaborative, boolean isolated)
+            throws IOException {
         LongAccumulator minScoreAcc = useCollaborative ? new LongAccumulator(Long::max, Long.MIN_VALUE) : null;
         long start = System.nanoTime();
         List<ScoreDocWithGlobalId> all;
         // Collaborative across shards needs a global docId space for safe tie-breaking.
         // Use a MultiReader-backed IndexSearcher so docBase/DocIDs are global across shards,
         // while the shared bar updates during the search.
-        if (useCollaborative) {
-            KnnFloatVectorQuery query = new CollaborativeKnnFloatVectorQuery(vectorField, queryVec, K, minScoreAcc);
+        if (useCollaborative && !isolated) {
+            TrackingCollaborativeKnnFloatVectorQuery query =
+                new TrackingCollaborativeKnnFloatVectorQuery(vectorField, queryVec, K, minScoreAcc);
             TopDocs td = multiSearcher.search(query, K);
             StoredFields stored = multiReader.storedFields();
             all = new ArrayList<>(td.scoreDocs.length);
@@ -118,54 +121,208 @@ public final class ShardKnnTester implements AutoCloseable {
                 int globalId = stored.document(sd.doc).getField(idField).numericValue().intValue();
                 all.add(new ScoreDocWithGlobalId(globalId, sd.score));
             }
+            long lookupsSaved = Math.max(0L, (long) multiReader.numDocs() - query.getTotalVisitedCount());
+            long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+            all.sort((a, b) -> Float.compare(b.score, a.score));
+            int[] topIds = new int[Math.min(K, all.size())];
+            for (int i = 0; i < topIds.length; i++) {
+                topIds[i] = all.get(i).globalId;
+            }
+            return new Result(topIds, elapsedMs, lookupsSaved);
+        } else if (useCollaborative && isolated) {
+            int shardCount = searchers.size();
+            int[] shardBases = new int[shardCount];
+            int runningBase = 0;
+            for (int i = 0; i < shardCount; i++) {
+                shardBases[i] = runningBase;
+                runningBase += readers.get(i).numDocs();
+            }
+            LongAccumulator[] shardAccs = new LongAccumulator[shardCount];
+            for (int i = 0; i < shardCount; i++) {
+                shardAccs[i] = new LongAccumulator(Long::max, Long.MIN_VALUE);
+            }
+            LongAccumulator globalAcc = new LongAccumulator(Long::max, Long.MIN_VALUE);
+            AtomicBoolean coordinatorRunning = new AtomicBoolean(true);
+            Thread coordinator = new Thread(() -> {
+                long lastPushed = Long.MIN_VALUE;
+                while (coordinatorRunning.get()) {
+                    long global = globalAcc.get();
+                    boolean updated = false;
+                    for (LongAccumulator shardAcc : shardAccs) {
+                        long local = shardAcc.get();
+                        if (local > global) {
+                            globalAcc.accumulate(local);
+                            global = globalAcc.get();
+                            updated = true;
+                        }
+                    }
+                    if (global > lastPushed) {
+                        for (LongAccumulator shardAcc : shardAccs) {
+                            shardAcc.accumulate(global);
+                        }
+                        lastPushed = global;
+                    }
+                    if (!updated) {
+                        try {
+                            Thread.sleep(1L);
+                        } catch (InterruptedException e) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
+                }
+            }, "shard-pruning-coordinator");
+            coordinator.setDaemon(true);
+            coordinator.start();
+            try {
+                if (searchExecutor != null) {
+                    List<Future<ShardSearchResult>> futures = new ArrayList<>(searchers.size());
+                    for (int s = 0; s < searchers.size(); s++) {
+                        final int shardIndex = s;
+                        final LongAccumulator acc = shardAccs[s];
+                        final int shardBase = shardBases[s];
+                        final IntUnaryOperator mapper = docId -> docId + shardBase;
+                        futures.add(searchExecutor.submit(() -> {
+                            ShardSearchResult res = searchOneShard(
+                                shardIndex, queryVec, K, acc, mapper);
+                            if (sharedState != null) {
+                                sharedState.update(shardIndex, res.hits);
+                            }
+                            return res;
+                        }));
+                    }
+                    all = new ArrayList<>();
+                    long lookupsSaved = 0;
+                    try {
+                        for (Future<ShardSearchResult> f : futures) {
+                            ShardSearchResult res = f.get();
+                            all.addAll(res.hits);
+                            lookupsSaved += res.lookupsSaved;
+                        }
+                    } catch (Exception e) {
+                        throw new IOException("Parallel shard search failed", e);
+                    }
+                    long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+                    all.sort((a, b) -> Float.compare(b.score, a.score));
+                    int[] topIds = new int[Math.min(K, all.size())];
+                    for (int i = 0; i < topIds.length; i++) {
+                        topIds[i] = all.get(i).globalId;
+                    }
+                    return new Result(topIds, elapsedMs, lookupsSaved);
+                } else {
+                    all = new ArrayList<>();
+                    long lookupsSaved = 0;
+                    for (int s = 0; s < searchers.size(); s++) {
+                        int shardBase = shardBases[s];
+                        IntUnaryOperator mapper = docId -> docId + shardBase;
+                        ShardSearchResult res = searchOneShard(
+                            s, queryVec, K, shardAccs[s], mapper);
+                        if (sharedState != null) {
+                            sharedState.update(s, res.hits);
+                        }
+                        all.addAll(res.hits);
+                        lookupsSaved += res.lookupsSaved;
+                    }
+                    long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+                    all.sort((a, b) -> Float.compare(b.score, a.score));
+                    int[] topIds = new int[Math.min(K, all.size())];
+                    for (int i = 0; i < topIds.length; i++) {
+                        topIds[i] = all.get(i).globalId;
+                    }
+                    return new Result(topIds, elapsedMs, lookupsSaved);
+                }
+            } finally {
+                coordinatorRunning.set(false);
+                try {
+                    coordinator.join();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            }
         } else if (searchExecutor != null) {
-            List<Future<List<ScoreDocWithGlobalId>>> futures = new ArrayList<>(searchers.size());
+            List<Future<ShardSearchResult>> futures = new ArrayList<>(searchers.size());
             for (int s = 0; s < searchers.size(); s++) {
                 final int shardIndex = s;
                 final LongAccumulator acc = minScoreAcc;
                 futures.add(searchExecutor.submit(() -> {
-                    List<ScoreDocWithGlobalId> res = searchOneShard(shardIndex, queryVec, K, acc);
+                    ShardSearchResult res = searchOneShard(shardIndex, queryVec, K, acc);
                     if (sharedState != null) {
-                        sharedState.update(shardIndex, res);
+                        sharedState.update(shardIndex, res.hits);
                     }
                     return res;
                 }));
             }
             all = new ArrayList<>();
+            long lookupsSaved = 0;
             try {
-                for (Future<List<ScoreDocWithGlobalId>> f : futures) {
-                    all.addAll(f.get());
+                for (Future<ShardSearchResult> f : futures) {
+                    ShardSearchResult res = f.get();
+                    all.addAll(res.hits);
+                    lookupsSaved += res.lookupsSaved;
                 }
             } catch (Exception e) {
                 throw new IOException("Parallel shard search failed", e);
             }
+            long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+            all.sort((a, b) -> Float.compare(b.score, a.score));
+            int[] topIds = new int[Math.min(K, all.size())];
+            for (int i = 0; i < topIds.length; i++) {
+                topIds[i] = all.get(i).globalId;
+            }
+            return new Result(topIds, elapsedMs, lookupsSaved);
         } else {
             all = new ArrayList<>();
+            long lookupsSaved = 0;
             for (int s = 0; s < searchers.size(); s++) {
-                List<ScoreDocWithGlobalId> res = searchOneShard(s, queryVec, K, minScoreAcc);
+                ShardSearchResult res = searchOneShard(s, queryVec, K, minScoreAcc);
                 if (sharedState != null) {
-                    sharedState.update(s, res);
+                    sharedState.update(s, res.hits);
                 }
-                all.addAll(res);
+                all.addAll(res.hits);
+                lookupsSaved += res.lookupsSaved;
             }
+            long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+            all.sort((a, b) -> Float.compare(b.score, a.score));
+            int[] topIds = new int[Math.min(K, all.size())];
+            for (int i = 0; i < topIds.length; i++) {
+                topIds[i] = all.get(i).globalId;
+            }
+            return new Result(topIds, elapsedMs, lookupsSaved);
         }
-        all.sort((a, b) -> Float.compare(b.score, a.score));
-        int[] topIds = new int[Math.min(K, all.size())];
-        for (int i = 0; i < topIds.length; i++) {
-            topIds[i] = all.get(i).globalId;
-        }
-        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
-        return new Result(topIds, elapsedMs, -1L);
     }
 
-    private List<ScoreDocWithGlobalId> searchOneShard(int shardIndex, float[] queryVec, int K) throws IOException {
-        return searchOneShard(shardIndex, queryVec, K, null);
+    private ShardSearchResult searchOneShard(int shardIndex, float[] queryVec, int K) throws IOException {
+        return searchOneShard(shardIndex, queryVec, K, null, null);
     }
 
-    private List<ScoreDocWithGlobalId> searchOneShard(int shardIndex, float[] queryVec, int K, LongAccumulator minScoreAcc) throws IOException {
-        KnnFloatVectorQuery query = minScoreAcc != null
-            ? new CollaborativeKnnFloatVectorQuery(vectorField, queryVec, K, minScoreAcc)
-            : new KnnFloatVectorQuery(vectorField, queryVec, K);
+    private ShardSearchResult searchOneShard(int shardIndex, float[] queryVec, int K, LongAccumulator minScoreAcc) throws IOException {
+        return searchOneShard(shardIndex, queryVec, K, minScoreAcc, null);
+    }
+
+    private ShardSearchResult searchOneShard(
+            int shardIndex,
+            float[] queryVec,
+            int K,
+            LongAccumulator minScoreAcc,
+            IntUnaryOperator docIdMapper) throws IOException {
+        if (minScoreAcc != null) {
+            TrackingCollaborativeKnnFloatVectorQuery query =
+                docIdMapper == null
+                    ? new TrackingCollaborativeKnnFloatVectorQuery(vectorField, queryVec, K, minScoreAcc)
+                    : new TrackingCollaborativeKnnFloatVectorQuery(
+                        vectorField, queryVec, K, minScoreAcc, docIdMapper);
+            TopDocs td = searchers.get(shardIndex).search(query, K);
+            StoredFields stored = readers.get(shardIndex).storedFields();
+            List<ScoreDocWithGlobalId> list = new ArrayList<>(td.scoreDocs.length);
+            for (ScoreDoc sd : td.scoreDocs) {
+                int globalId = stored.document(sd.doc).getField(idField).numericValue().intValue();
+                list.add(new ScoreDocWithGlobalId(globalId, sd.score));
+            }
+            long lookupsSaved = Math.max(0L, (long) readers.get(shardIndex).numDocs() - query.getTotalVisitedCount());
+            return new ShardSearchResult(list, lookupsSaved);
+        }
+        TrackingKnnFloatVectorQuery query =
+            new TrackingKnnFloatVectorQuery(vectorField, queryVec, K);
         TopDocs td = searchers.get(shardIndex).search(query, K);
         StoredFields stored = readers.get(shardIndex).storedFields();
         List<ScoreDocWithGlobalId> list = new ArrayList<>(td.scoreDocs.length);
@@ -173,7 +330,8 @@ public final class ShardKnnTester implements AutoCloseable {
             int globalId = stored.document(sd.doc).getField(idField).numericValue().intValue();
             list.add(new ScoreDocWithGlobalId(globalId, sd.score));
         }
-        return list;
+        long lookupsSaved = Math.max(0L, (long) readers.get(shardIndex).numDocs() - query.getTotalVisitedCount());
+        return new ShardSearchResult(list, lookupsSaved);
     }
 
     /** Merged recall = |retrieved ∩ exact| / K. retrieved = merged top-K from all shards; exactTopK = exact global top-K. */
@@ -220,6 +378,16 @@ public final class ShardKnnTester implements AutoCloseable {
         ScoreDocWithGlobalId(int globalId, float score) {
             this.globalId = globalId;
             this.score = score;
+        }
+    }
+
+    private static final class ShardSearchResult {
+        final List<ScoreDocWithGlobalId> hits;
+        final long lookupsSaved;
+
+        ShardSearchResult(List<ScoreDocWithGlobalId> hits, long lookupsSaved) {
+            this.hits = hits;
+            this.lookupsSaved = lookupsSaved;
         }
     }
 }

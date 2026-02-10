@@ -2,6 +2,7 @@ package lucenetestdata.indexbuilder;
 
 import java.lang.reflect.Constructor;
 import java.util.concurrent.atomic.LongAccumulator;
+import java.util.function.IntUnaryOperator;
 import org.apache.lucene.search.IndexSearcher;
 import org.apache.lucene.search.KnnFloatVectorQuery;
 import org.apache.lucene.search.knn.KnnCollectorManager;
@@ -12,14 +13,25 @@ import org.apache.lucene.search.knn.KnnCollectorManager;
  * minimum score from earlier shards. Uses reflection so this compiles against stock
  * Lucene 10.3.2; when the PR JAR is on the classpath, collaborative search is used.
  */
-public final class CollaborativeKnnFloatVectorQuery extends KnnFloatVectorQuery {
+public class CollaborativeKnnFloatVectorQuery extends KnnFloatVectorQuery {
 
     private final LongAccumulator minScoreAcc;
+    private final IntUnaryOperator docIdMapper;
 
     public CollaborativeKnnFloatVectorQuery(
             String field, float[] target, int k, LongAccumulator minScoreAcc) {
+        this(field, target, k, minScoreAcc, null);
+    }
+
+    public CollaborativeKnnFloatVectorQuery(
+            String field,
+            float[] target,
+            int k,
+            LongAccumulator minScoreAcc,
+            IntUnaryOperator docIdMapper) {
         super(field, target, k);
         this.minScoreAcc = minScoreAcc;
+        this.docIdMapper = docIdMapper;
     }
 
     @Override
@@ -27,6 +39,15 @@ public final class CollaborativeKnnFloatVectorQuery extends KnnFloatVectorQuery 
         try {
             Class<?> clazz =
                     Class.forName("org.apache.lucene.search.knn.CollaborativeKnnCollectorManager");
+            if (docIdMapper != null) {
+                try {
+                    Constructor<?> ctor = clazz.getConstructor(
+                            int.class, LongAccumulator.class, IntUnaryOperator.class);
+                    return (KnnCollectorManager) ctor.newInstance(k, minScoreAcc, docIdMapper);
+                } catch (NoSuchMethodException ignore) {
+                    // fall back to 2-arg ctor when mapper not supported
+                }
+            }
             Constructor<?> ctor = clazz.getConstructor(int.class, LongAccumulator.class);
             return (KnnCollectorManager) ctor.newInstance(k, minScoreAcc);
         } catch (ReflectiveOperationException e) {

@@ -36,12 +36,17 @@ public final class RunShardTest {
         int dim = 0;
         int searchThreads = 0; // 0 = default
         int queryThreads = 1;  // parallel queries (1 = sequential)
+        int maxQueries = 0;    // 0 = all
+        int debugQueries = 0;  // 0 = off; print per-query overlap for first N
+        Path dumpTopKPath = null;
         boolean collaborative = false;
+        boolean isolated = false;
         boolean progress = false;
         int[] kValues = { 10, 100, 1000, 10_000 };
         for (int i = 0; i < args.length; i++) {
             switch (args[i].toLowerCase(Locale.ROOT)) {
                 case "--collaborative" -> collaborative = true;
+                case "--isolated" -> isolated = true;
                 case "--progress" -> progress = true;
                 case "--shards", "-s" -> {
                     if (i + 1 >= args.length) usage("Missing value for --shards");
@@ -79,6 +84,20 @@ public final class RunShardTest {
                     queryThreads = Integer.parseInt(args[++i]);
                     if (queryThreads < 1) usage("--query-threads must be >= 1");
                 }
+                case "--max-queries" -> {
+                    if (i + 1 >= args.length) usage("Missing value for --max-queries");
+                    maxQueries = Integer.parseInt(args[++i]);
+                    if (maxQueries < 1) usage("--max-queries must be >= 1");
+                }
+                case "--debug-queries" -> {
+                    if (i + 1 >= args.length) usage("Missing value for --debug-queries");
+                    debugQueries = Integer.parseInt(args[++i]);
+                    if (debugQueries < 1) usage("--debug-queries must be >= 1");
+                }
+                case "--dump-topk" -> {
+                    if (i + 1 >= args.length) usage("Missing value for --dump-topk");
+                    dumpTopKPath = Path.of(args[++i]);
+                }
                 case "--help", "-h" -> usage(null);
                 default -> usage("Unknown option: " + args[i]);
             }
@@ -86,6 +105,9 @@ public final class RunShardTest {
         if (shardsDir == null) usage("--shards is required");
         if (queriesPath == null) usage("--queries is required");
         if (dim <= 0) usage("--dim is required");
+        if (isolated && !collaborative) {
+            usage("--isolated requires --collaborative");
+        }
 
         List<Path> shardPaths = List.of();
         try {
@@ -107,6 +129,15 @@ public final class RunShardTest {
         System.out.println("Search threads: " + effectiveSearchThreads + (searchThreads > 0 ? "" : " (default)"));
         System.out.println("Query threads: " + queryThreads + (queryThreads > 1 ? " (parallel queries)" : ""));
         System.out.println("Queries: " + queriesPath + " dim=" + dim);
+        if (maxQueries > 0) {
+            System.out.println("Max queries: " + maxQueries);
+        }
+        if (debugQueries > 0) {
+            System.out.println("Debug queries: first " + debugQueries);
+        }
+        if (dumpTopKPath != null) {
+            System.out.println("Dump topK: " + dumpTopKPath);
+        }
         if (docsPath != null) {
             System.out.println("Docs (for recall): " + docsPath);
         } else {
@@ -115,6 +146,9 @@ public final class RunShardTest {
         System.out.println("K values: " + java.util.Arrays.toString(kValues));
         if (collaborative) {
             System.out.println("Collaborative HNSW: enabled (PR 15676; shared min-score across shards)");
+            if (isolated) {
+                System.out.println("Isolation: enabled (simulated coordinator push; per-shard bar)");
+            }
         }
         if (progress) {
             System.out.println("Progress: enabled (every 1000 queries per K, to stderr)");
@@ -127,6 +161,9 @@ public final class RunShardTest {
             queries = VecReader.readAll(queriesPath, dim);
             if (docsPath != null) {
                 docs = VecReader.readAllFromPath(docsPath, dim);
+            }
+            if (maxQueries > 0 && queries.size() > maxQueries) {
+                queries = new ArrayList<>(queries.subList(0, maxQueries));
             }
         } catch (IOException e) {
             System.err.println("Failed to load vectors: " + e.getMessage());
@@ -142,7 +179,10 @@ public final class RunShardTest {
             IndexBuilder.ID_FIELD,
             dim,
             effectiveSearchThreads
-        )) {
+        );
+             java.io.PrintWriter dumpWriter = dumpTopKPath != null
+                 ? new java.io.PrintWriter(Files.newBufferedWriter(dumpTopKPath))
+                 : null) {
             int nDoc = tester.getTotalDocs();
             int numShards = tester.getNumShards();
             int numQueries = queries.size();
@@ -173,6 +213,9 @@ public final class RunShardTest {
                         final int kVal = K;
                         final boolean collaborativeRef = collaborative;
                         final boolean progressRef = progress;
+                        final boolean isolatedRef = isolated;
+                        final int debugQueriesRef = debugQueries;
+                        final java.io.PrintWriter dumpWriterRef = dumpWriter;
                         int chunks = Math.min(queryThreads, numQueries);
                         int chunkSize = (numQueries + chunks - 1) / chunks;
                         List<Callable<ChunkResult>> tasks = new ArrayList<>(chunks);
@@ -182,7 +225,21 @@ public final class RunShardTest {
                             if (start >= end) continue;
                             final int chunkStart = start;
                             final int chunkEnd = end;
-                            tasks.add(() -> runQueryChunk(testerRef, queriesRef, exactNNRef, kVal, chunkStart, chunkEnd, collaborativeRef, progressRef, progressDone, numQueries));
+                            tasks.add(() -> runQueryChunk(
+                                testerRef,
+                                queriesRef,
+                                exactNNRef,
+                                kVal,
+                                chunkStart,
+                                chunkEnd,
+                                collaborativeRef,
+                                isolatedRef,
+                                progressRef,
+                                progressDone,
+                                numQueries,
+                                debugQueriesRef,
+                                dumpWriterRef
+                            ));
                         }
                         List<Future<ChunkResult>> futures = queryExecutor.invokeAll(tasks);
                         totalLatencyMs = 0;
@@ -205,16 +262,24 @@ public final class RunShardTest {
                         totalLookupsSaved = 0;
                         lookupsSavedCount = 0;
                         for (int q = 0; q < queries.size(); q++) {
-                            ShardKnnTester.Result res = tester.searchOne(queries.get(q), K, null, collaborative);
+                            ShardKnnTester.Result res = tester.searchOne(queries.get(q), K, null, collaborative, isolated);
                             totalLatencyMs += res.elapsedMs;
                             if (res.lookupsSaved >= 0) {
                                 totalLookupsSaved += res.lookupsSaved;
                                 lookupsSavedCount++;
                             }
+                            if (dumpWriter != null) {
+                                dumpTopK(dumpWriter, K, q, res.topIds);
+                            }
                             if (exactNN != null) {
                                 int[] exact = exactNN.exactTopK(queries.get(q), K);
-                                sumRecall += ShardKnnTester.recall(res.topIds, exact);
+                                int overlap = overlapCount(res.topIds, exact);
+                                sumRecall += (double) overlap / res.topIds.length;
                                 recallCount++;
+                                if (debugQueries > 0 && q < debugQueries) {
+                                    System.err.println(
+                                        "DEBUG K=" + K + " q=" + q + " overlap=" + overlap + "/" + res.topIds.length);
+                                }
                             }
                             if (progress && (q + 1) % 1000 == 0) {
                                 System.err.println("  K=" + K + " progress: " + (q + 1) + "/" + numQueries);
@@ -259,25 +324,38 @@ public final class RunShardTest {
             int start,
             int end,
             boolean collaborative,
+            boolean isolated,
             boolean progress,
             AtomicInteger progressDone,
-            int numQueries) throws IOException {
+            int numQueries,
+            int debugQueries,
+            java.io.PrintWriter dumpWriter) throws IOException {
         long totalLatencyMs = 0;
         double sumRecall = 0;
         int recallCount = 0;
         long totalLookupsSaved = 0;
         int lookupsSavedCount = 0;
         for (int q = start; q < end; q++) {
-            ShardKnnTester.Result res = tester.searchOne(queries.get(q), K, null, collaborative);
+            ShardKnnTester.Result res = tester.searchOne(queries.get(q), K, null, collaborative, isolated);
             totalLatencyMs += res.elapsedMs;
             if (res.lookupsSaved >= 0) {
                 totalLookupsSaved += res.lookupsSaved;
                 lookupsSavedCount++;
             }
+            if (dumpWriter != null) {
+                dumpTopK(dumpWriter, K, q, res.topIds);
+            }
             if (exactNN != null) {
                 int[] exact = exactNN.exactTopK(queries.get(q), K);
-                sumRecall += ShardKnnTester.recall(res.topIds, exact);
+                int overlap = overlapCount(res.topIds, exact);
+                sumRecall += (double) overlap / res.topIds.length;
                 recallCount++;
+                if (debugQueries > 0 && q < debugQueries) {
+                    synchronized (PROGRESS_LOCK) {
+                        System.err.println(
+                            "DEBUG K=" + K + " q=" + q + " overlap=" + overlap + "/" + res.topIds.length);
+                    }
+                }
             }
             if (progress && progressDone != null) {
                 int d = progressDone.incrementAndGet();
@@ -341,8 +419,37 @@ public final class RunShardTest {
         System.err.println("  --k        Comma-separated K values (default: 10,100,1000,10000)");
         System.err.println("  --search-threads  Threads for shard search (default: num shards, or numShards*queryThreads)");
         System.err.println("  --query-threads   Parallel queries (default: 1). Use 2-3 to use more cores.");
+        System.err.println("  --max-queries     Limit to first N queries (for correctness/debug runs)");
+        System.err.println("  --debug-queries   Print per-query overlap for first N queries (to stderr)");
+        System.err.println("  --dump-topk       Write top-K IDs per query to a file (for diffing runs)");
         System.err.println("  --collaborative   Use collaborative HNSW (PR 15676): shared min-score across shards for pruning. Requires PR Lucene JAR.");
+        System.err.println("  --isolated        Simulate coordinator push (per-shard bars). Requires --collaborative.");
         System.err.println("  --progress       Print progress every 1000 queries per K (to stderr). Does not affect recall or latency results.");
         System.exit(msg == null ? 0 : 1);
+    }
+
+    private static int overlapCount(int[] retrieved, int[] exactTopK) {
+        java.util.HashSet<Integer> exactSet = new java.util.HashSet<>();
+        for (int id : exactTopK) {
+            exactSet.add(id);
+        }
+        int hit = 0;
+        for (int id : retrieved) {
+            if (exactSet.contains(id)) hit++;
+        }
+        return hit;
+    }
+
+    private static void dumpTopK(java.io.PrintWriter writer, int k, int q, int[] topIds) {
+        StringBuilder sb = new StringBuilder();
+        sb.append("K=").append(k).append("\tq=").append(q).append("\tids=");
+        for (int i = 0; i < topIds.length; i++) {
+            if (i > 0) sb.append(',');
+            sb.append(topIds[i]);
+        }
+        synchronized (writer) {
+            writer.println(sb);
+            writer.flush();
+        }
     }
 }

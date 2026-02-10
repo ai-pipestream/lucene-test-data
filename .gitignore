@@ -29,6 +29,7 @@ venv/
 .DS_Store
 
 build
+**/bin/
 
 .gradle
 .claude
