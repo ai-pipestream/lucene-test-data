@@ -21,8 +21,9 @@ public final class TrackingCollaborativeKnnFloatVectorQuery extends Collaborativ
             float[] target,
             int k,
             LongAccumulator minScoreAcc,
-            IntUnaryOperator docIdMapper) {
-        super(field, target, k, minScoreAcc, docIdMapper);
+            IntUnaryOperator docIdMapper,
+            int numShards) {
+        super(field, target, k, minScoreAcc, docIdMapper, numShards);
     }
 
     @Override

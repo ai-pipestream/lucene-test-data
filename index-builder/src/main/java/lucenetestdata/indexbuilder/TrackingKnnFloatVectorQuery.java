@@ -7,7 +7,7 @@ import org.apache.lucene.search.TopDocs;
 /**
  * Standard KNN query that tracks visited count via mergeLeafResults.
  */
-public final class TrackingKnnFloatVectorQuery extends KnnFloatVectorQuery {
+public final class TrackingKnnFloatVectorQuery extends NonOptimisticKnnFloatVectorQuery {
     private final AtomicLong totalVisitedCount = new AtomicLong();
 
     public TrackingKnnFloatVectorQuery(String field, float[] target, int k) {

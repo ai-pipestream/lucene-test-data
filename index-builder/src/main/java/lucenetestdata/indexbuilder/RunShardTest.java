@@ -42,12 +42,17 @@ public final class RunShardTest {
         boolean collaborative = false;
         boolean isolated = false;
         boolean progress = false;
+        long seed = 42L;
         int[] kValues = { 10, 100, 1000, 10_000 };
         for (int i = 0; i < args.length; i++) {
             switch (args[i].toLowerCase(Locale.ROOT)) {
                 case "--collaborative" -> collaborative = true;
                 case "--isolated" -> isolated = true;
                 case "--progress" -> progress = true;
+                case "--seed" -> {
+                    if (i + 1 >= args.length) usage("Missing value for --seed");
+                    seed = Long.parseLong(args[++i]);
+                }
                 case "--shards", "-s" -> {
                     if (i + 1 >= args.length) usage("Missing value for --shards");
                     shardsDir = Path.of(args[++i]);
@@ -191,7 +196,7 @@ public final class RunShardTest {
             System.out.println();
 
             // recall = merged recall: (merged top-K from all shards) vs exact global top-K over full doc set
-            System.out.println("topK\tlatency_ms\tmerged_recall\tlookups_saved\tnDoc\tnumShards\tnum_queries");
+            System.out.println("topK\tlatency_ms\tavg_shard_ms\tstddev_ms\tmerged_recall\tlookups_saved\tnDoc\tnumShards\tnum_queries");
             List<String> summaryLines = new ArrayList<>();
 
             ExecutorService queryExecutor = queryThreads > 1 ? Executors.newFixedThreadPool(queryThreads) : null;
@@ -204,6 +209,8 @@ public final class RunShardTest {
                         System.err.println("Running K=" + K + " (" + numQueries + " queries)...");
                     }
                     long totalLatencyMs;
+                    double totalAvgShardMs;
+                    double totalStdDevMs;
                     double sumRecall;
                     int recallCount;
                     long totalLookupsSaved;
@@ -243,6 +250,8 @@ public final class RunShardTest {
                         }
                         List<Future<ChunkResult>> futures = queryExecutor.invokeAll(tasks);
                         totalLatencyMs = 0;
+                        totalAvgShardMs = 0;
+                        totalStdDevMs = 0;
                         sumRecall = 0;
                         recallCount = 0;
                         totalLookupsSaved = 0;
@@ -250,6 +259,8 @@ public final class RunShardTest {
                         for (Future<ChunkResult> f : futures) {
                             ChunkResult cr = f.get();
                             totalLatencyMs += cr.totalLatencyMs;
+                            totalAvgShardMs += cr.totalAvgShardMs;
+                            totalStdDevMs += cr.totalStdDevMs;
                             sumRecall += cr.sumRecall;
                             recallCount += cr.recallCount;
                             totalLookupsSaved += cr.totalLookupsSaved;
@@ -257,6 +268,8 @@ public final class RunShardTest {
                         }
                     } else {
                         totalLatencyMs = 0;
+                        totalAvgShardMs = 0;
+                        totalStdDevMs = 0;
                         sumRecall = 0;
                         recallCount = 0;
                         totalLookupsSaved = 0;
@@ -264,6 +277,8 @@ public final class RunShardTest {
                         for (int q = 0; q < queries.size(); q++) {
                             ShardKnnTester.Result res = tester.searchOne(queries.get(q), K, null, collaborative, isolated);
                             totalLatencyMs += res.elapsedMs;
+                            totalAvgShardMs += res.avgShardMs;
+                            totalStdDevMs += res.stdDevShardMs;
                             if (res.lookupsSaved >= 0) {
                                 totalLookupsSaved += res.lookupsSaved;
                                 lookupsSavedCount++;
@@ -287,13 +302,16 @@ public final class RunShardTest {
                         }
                     }
                     long avgLatencyMs = numQueries > 0 ? totalLatencyMs / numQueries : 0;
+                    double finalAvgShardMs = numQueries > 0 ? totalAvgShardMs / numQueries : 0;
+                    double finalStdDevMs = numQueries > 0 ? totalStdDevMs / numQueries : 0;
                     String recallStr = exactNN != null && recallCount > 0
                         ? String.format(Locale.ROOT, "%.4f", sumRecall / recallCount)
                         : "N/A";
                     String lookupsSavedStr = lookupsSavedCount > 0
                         ? String.valueOf(totalLookupsSaved / lookupsSavedCount)
                         : "N/A";
-                    String line = K + "\t" + avgLatencyMs + "\t" + recallStr + "\t" + lookupsSavedStr + "\t" + nDoc + "\t" + numShards + "\t" + numQueries;
+                    String line = String.format(Locale.ROOT, "%d\t%d\t%.1f\t%.1f\t%s\t%s\t%d\t%d\t%d",
+                        K, avgLatencyMs, finalAvgShardMs, finalStdDevMs, recallStr, lookupsSavedStr, nDoc, numShards, numQueries);
                     System.out.println(line);
                     summaryLines.add("SUMMARY\t" + datasetName + "\t" + line);
                 }
@@ -331,6 +349,8 @@ public final class RunShardTest {
             int debugQueries,
             java.io.PrintWriter dumpWriter) throws IOException {
         long totalLatencyMs = 0;
+        double totalAvgShardMs = 0;
+        double totalStdDevMs = 0;
         double sumRecall = 0;
         int recallCount = 0;
         long totalLookupsSaved = 0;
@@ -338,6 +358,8 @@ public final class RunShardTest {
         for (int q = start; q < end; q++) {
             ShardKnnTester.Result res = tester.searchOne(queries.get(q), K, null, collaborative, isolated);
             totalLatencyMs += res.elapsedMs;
+            totalAvgShardMs += res.avgShardMs;
+            totalStdDevMs += res.stdDevShardMs;
             if (res.lookupsSaved >= 0) {
                 totalLookupsSaved += res.lookupsSaved;
                 lookupsSavedCount++;
@@ -366,18 +388,22 @@ public final class RunShardTest {
                 }
             }
         }
-        return new ChunkResult(totalLatencyMs, sumRecall, recallCount, totalLookupsSaved, lookupsSavedCount);
+        return new ChunkResult(totalLatencyMs, totalAvgShardMs, totalStdDevMs, sumRecall, recallCount, totalLookupsSaved, lookupsSavedCount);
     }
 
     private static final class ChunkResult {
         final long totalLatencyMs;
+        final double totalAvgShardMs;
+        final double totalStdDevMs;
         final double sumRecall;
         final int recallCount;
         final long totalLookupsSaved;
         final int lookupsSavedCount;
 
-        ChunkResult(long totalLatencyMs, double sumRecall, int recallCount, long totalLookupsSaved, int lookupsSavedCount) {
+        ChunkResult(long totalLatencyMs, double totalAvgShardMs, double totalStdDevMs, double sumRecall, int recallCount, long totalLookupsSaved, int lookupsSavedCount) {
             this.totalLatencyMs = totalLatencyMs;
+            this.totalAvgShardMs = totalAvgShardMs;
+            this.totalStdDevMs = totalStdDevMs;
             this.sumRecall = sumRecall;
             this.recallCount = recallCount;
             this.totalLookupsSaved = totalLookupsSaved;

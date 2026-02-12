@@ -17,10 +17,11 @@ public class CollaborativeKnnFloatVectorQuery extends KnnFloatVectorQuery {
 
     private final LongAccumulator minScoreAcc;
     private final IntUnaryOperator docIdMapper;
+    private final int numShards;
 
     public CollaborativeKnnFloatVectorQuery(
             String field, float[] target, int k, LongAccumulator minScoreAcc) {
-        this(field, target, k, minScoreAcc, null);
+        this(field, target, k, minScoreAcc, null, 1);
     }
 
     public CollaborativeKnnFloatVectorQuery(
@@ -29,9 +30,20 @@ public class CollaborativeKnnFloatVectorQuery extends KnnFloatVectorQuery {
             int k,
             LongAccumulator minScoreAcc,
             IntUnaryOperator docIdMapper) {
+        this(field, target, k, minScoreAcc, docIdMapper, 1);
+    }
+
+    public CollaborativeKnnFloatVectorQuery(
+            String field,
+            float[] target,
+            int k,
+            LongAccumulator minScoreAcc,
+            IntUnaryOperator docIdMapper,
+            int numShards) {
         super(field, target, k);
         this.minScoreAcc = minScoreAcc;
         this.docIdMapper = docIdMapper;
+        this.numShards = numShards;
     }
 
     @Override
@@ -39,6 +51,17 @@ public class CollaborativeKnnFloatVectorQuery extends KnnFloatVectorQuery {
         try {
             Class<?> clazz =
                     Class.forName("org.apache.lucene.search.knn.CollaborativeKnnCollectorManager");
+            
+            // Try 4-arg ctor (int, LongAccumulator, IntUnaryOperator, int)
+            try {
+                Constructor<?> ctor = clazz.getConstructor(
+                        int.class, LongAccumulator.class, IntUnaryOperator.class, int.class);
+                return (KnnCollectorManager) ctor.newInstance(k, minScoreAcc, 
+                        docIdMapper != null ? docIdMapper : (IntUnaryOperator) (id -> id), 
+                        numShards);
+            } catch (NoSuchMethodException ignore) {
+            }
+
             if (docIdMapper != null) {
                 try {
                     Constructor<?> ctor = clazz.getConstructor(
