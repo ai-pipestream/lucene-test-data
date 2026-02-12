@@ -40,6 +40,11 @@ application {
     mainClass.set("lucenetestdata.indexbuilder.BuildIndex")
 }
 
+tasks.register<JavaExec>("simpleIndexer") {
+    mainClass.set("lucenetestdata.indexbuilder.SimpleIndexer")
+    classpath = sourceSets["main"].runtimeClasspath
+}
+
 tasks.register<JavaExec>("mergeShards") {
     mainClass.set("lucenetestdata.indexbuilder.MergeShards")
     classpath = sourceSets["main"].runtimeClasspath
