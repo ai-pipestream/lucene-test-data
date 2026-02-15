@@ -43,6 +43,9 @@ def get_source_id(cfg: dict) -> str:
     if cfg.get("source") == "text_dir":
         p = cfg.get("text_dir", {}).get("path") or "text_dir"
         return Path(p).name if isinstance(p, str) else "text_dir"
+    if cfg.get("source") == "messages":
+        p = cfg.get("messages", {}).get("path") or "messages"
+        return Path(p).stem if isinstance(p, str) else "messages"
     return "unknown"
 
 
@@ -50,7 +53,19 @@ def load_texts(cfg: dict) -> list[str]:
     """Load raw document texts from configured source."""
     source = cfg.get("source")
     if not source:
-        raise ValueError("config must set source: wikipedia or text_dir")
+        raise ValueError("config must set source: wikipedia, text_dir, or messages")
+
+    if source == "messages":
+        from sources.messages import load_messages_all
+        m = cfg.get("messages", {})
+        path = m.get("path")
+        if not path:
+            raise ValueError("messages.path is required when source=messages")
+        return load_messages_all(
+            path,
+            encoding=m.get("encoding", "utf-8"),
+            max_docs=m.get("max_docs"),
+        )
 
     if source == "wikipedia":
         from sources.wikipedia import load_wikipedia_all
@@ -83,6 +98,10 @@ def load_texts(cfg: dict) -> list[str]:
 
 def chunk_all_docs(doc_texts: list[str], cfg: dict) -> list[str]:
     """Chunk each document by granularity; return flat list of chunks."""
+    # For messages source: each "doc" is already one message, no chunking
+    if cfg.get("source") == "messages":
+        return [t.strip() for t in doc_texts if t.strip()]
+
     granularity = cfg.get("granularity", "sentence")
     if granularity not in ("sentence", "paragraph"):
         raise ValueError(f"granularity must be sentence or paragraph, got {granularity!r}")
@@ -100,9 +119,10 @@ def chunk_all_docs(doc_texts: list[str], cfg: dict) -> list[str]:
 def main() -> int:
     ap = argparse.ArgumentParser(description="Generate .vec embeddings + manifest via DJL")
     ap.add_argument("--config", "-c", type=Path, default=_SCRIPT_DIR / "config.example.yaml", help="YAML config path")
-    ap.add_argument("--source", choices=("wikipedia", "text_dir"), help="Override source")
+    ap.add_argument("--source", choices=("wikipedia", "text_dir", "messages"), help="Override source")
     ap.add_argument("--wikipedia-path", type=Path, help="Override wikipedia.path")
     ap.add_argument("--text-dir-path", type=Path, help="Override text_dir.path")
+    ap.add_argument("--messages-path", type=Path, help="Override messages.path (for source=messages)")
     ap.add_argument("--granularity", choices=("sentence", "paragraph"), help="Override granularity")
     ap.add_argument("--output-dir", type=Path, help="Override output.output_dir")
     ap.add_argument("--output-name", type=str, help="Override output.name (named subdir: e.g. unit-data, wiki-1024-sentences)")
@@ -124,6 +144,9 @@ def main() -> int:
         cfg.setdefault("wikipedia", {})["path"] = str(args.wikipedia_path)
     if args.text_dir_path:
         cfg.setdefault("text_dir", {})["path"] = str(args.text_dir_path)
+    if args.messages_path:
+        cfg["source"] = "messages"
+        cfg.setdefault("messages", {})["path"] = str(args.messages_path)
     if args.granularity:
         cfg["granularity"] = args.granularity
     if args.output_dir:
@@ -257,6 +280,8 @@ def main() -> int:
         source_path = cfg.get("wikipedia", {}).get("path", "")
     elif source == "text_dir":
         source_path = cfg.get("text_dir", {}).get("path", "")
+    elif source == "messages":
+        source_path = cfg.get("messages", {}).get("path", "")
 
     manifest = {
         "source": source,

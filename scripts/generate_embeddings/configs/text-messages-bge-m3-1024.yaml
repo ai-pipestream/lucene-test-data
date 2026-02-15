@@ -1,0 +1,18 @@
+# Text messages: one message per line, embed each as a single unit.
+# Use for chat logs, SMS exports, slack-like message dumps.
+source: messages
+
+messages:
+  path: data/messages.txt
+  encoding: utf-8
+
+djl:
+  url: http://localhost:8091
+  model_name: bge_m3
+  dim: 1024
+  batch_size: 32
+  timeout_sec: 240
+
+output:
+  output_dir: data/embeddings
+  name: text-messages
